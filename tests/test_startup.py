@@ -1,3 +1,5 @@
+import subprocess
+import sys
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).parents[1]
@@ -11,3 +13,25 @@ def test_streamlit_startup_disables_first_run_email_prompt() -> None:
     assert "showEmailPrompt = false" in config
     assert "--browser.gatherUsageStats=false" in script
     assert "gatherUsageStats = false" in config
+
+
+def test_streamlit_script_path_does_not_shadow_agents_sdk() -> None:
+    probe = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import sys; "
+                "sys.path.insert(0, 'coursepilot'); "
+                "from agents import Agent; "
+                "print(Agent.__module__)"
+            ),
+        ],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert probe.returncode == 0, probe.stderr
+    assert probe.stdout.strip().startswith("agents.")

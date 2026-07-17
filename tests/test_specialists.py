@@ -3,7 +3,7 @@ from typing import Any
 
 import pytest
 
-from coursepilot.agents import NotesAgent, ReviewRequiredError, RevisionAgent
+from coursepilot.agent_runtime import NotesAgent, ReviewRequiredError, RevisionAgent
 from coursepilot.models import CourseContext, NotesResult, RevisionMode
 from coursepilot.reliability import ExternalServiceTimeout, with_retry
 from coursepilot.retrieval import SearchResult, SearchScope

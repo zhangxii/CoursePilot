@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from coursepilot.agents import (
+from coursepilot.agent_runtime import (
     AgentRequest,
     CourseRequiredError,
     FileAgentRuntime,

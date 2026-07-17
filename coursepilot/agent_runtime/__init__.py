@@ -1,4 +1,4 @@
-from coursepilot.agents.core import (
+from coursepilot.agent_runtime.core import (
     AgentRequest,
     CourseRequiredError,
     FileAgentRuntime,
@@ -11,7 +11,7 @@ from coursepilot.agents.core import (
     UnknownIntentError,
     build_sdk_main_agent,
 )
-from coursepilot.agents.specialists import (
+from coursepilot.agent_runtime.specialists import (
     AssignmentAgent,
     NotesAgent,
     RetrievalTools,

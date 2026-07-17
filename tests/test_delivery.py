@@ -1,6 +1,6 @@
 import logging
 
-from coursepilot.agents import build_sdk_main_agent
+from coursepilot.agent_runtime import build_sdk_main_agent
 from coursepilot.models import Assignment, Team, TeamMember
 from coursepilot.observability import TraceCollector, TraceContext, log_error
 from coursepilot.ui import WorkspaceView

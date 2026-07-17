@@ -16,7 +16,7 @@ from agents import (
 )
 from openai import AsyncOpenAI
 
-from coursepilot.agents import FileAgentRuntime, build_sdk_main_agent
+from coursepilot.agent_runtime import FileAgentRuntime, build_sdk_main_agent
 from coursepilot.config import load_settings
 from coursepilot.ingestion import MarkdownValidator, MaterialIngestionService
 from coursepilot.models import (
