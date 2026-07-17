@@ -21,4 +21,3 @@ coursepilot init-db
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/check.ps1
 ```
-
