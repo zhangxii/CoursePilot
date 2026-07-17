@@ -210,7 +210,7 @@ def build_sdk_main_agent(
         Agent(
             name="AssignmentAgent",
             model=model,
-            instructions="读取唯一作业和当前答案，检索当前课程，生成并自检答案。",
+            instructions="读取当前题目和该题当前答案，检索当前课程，生成并自检共享答案。",
             output_type=AssignmentResult,
             tools=assignment_tools or [],
         ),

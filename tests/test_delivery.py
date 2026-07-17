@@ -40,13 +40,24 @@ def test_workspace_view_has_one_assignment_and_no_create_entry() -> None:
     view = WorkspaceView(
         team=Team(name="Group", members=[TeamMember(id="alice", name="Alice")]),
         courses=[],
-        assignment=Assignment(title="Only assignment", requirements="Deliver one report"),
+        assignments=[
+            Assignment(
+                id="assignment-1",
+                title="First assignment",
+                requirements="Deliver one report",
+            )
+        ],
+        assignment=Assignment(
+            id="assignment-1",
+            title="First assignment",
+            requirements="Deliver one report",
+        ),
         answer=None,
         answer_version=1,
         review=None,
         materials=[],
     )
 
-    assert view.assignment.id == "main_assignment"
-    assert view.can_create_assignment is False
+    assert view.assignment.id == "assignment-1"
+    assert view.can_create_assignment is True
     assert view.active_course is None

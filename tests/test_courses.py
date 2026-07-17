@@ -71,6 +71,7 @@ def test_course_service_creates_lists_and_switches_the_single_active_course(
     context = CourseContext(
         active_course_id=first.id,
         active_course_name=first.name,
+        active_assignment_id="assignment-1",
     )
     updated_context = service.activate(second.id, context)
 
@@ -96,6 +97,7 @@ def test_activating_unknown_course_preserves_the_current_course(tmp_path: Path) 
     context = CourseContext(
         active_course_id=active.id,
         active_course_name=active.name,
+        active_assignment_id="assignment-1",
     )
     with pytest.raises(CourseNotFoundError):
         service.activate("missing-course", context)

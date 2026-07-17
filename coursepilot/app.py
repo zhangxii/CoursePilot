@@ -46,6 +46,10 @@ class AppController(Protocol):
 
     def activate_course(self, course_id: str) -> None: ...
 
+    def create_assignment(self, assignment_id: str, title: str, requirements: str) -> None: ...
+
+    def activate_assignment(self, assignment_id: str) -> None: ...
+
     def upload_material(self, file_name: str, content: bytes) -> None: ...
 
     def run_agent(self, message: str) -> str: ...
@@ -73,6 +77,8 @@ class ProductionController:
     def view(self) -> WorkspaceView:
         courses = self._courses.list()
         active = self._courses.get_active()
+        assignments = self._workspace.list_assignments()
+        assignment = self._workspace.get_assignment()
         materials = [] if active is None else self._materials.list_for_course(active.id)
         context = None if active is None else self._workspace.context(active)
         repository = WorkspaceRepository(self._settings.data_path)
@@ -81,7 +87,8 @@ class ProductionController:
         return WorkspaceView(
             team=self._workspace.get_team(),
             courses=courses,
-            assignment=self._workspace.get_assignment(),
+            assignments=assignments,
+            assignment=assignment,
             answer=None if context is None else context.current_answer,
             answer_version=1 if context is None else context.answer_version,
             review=None if context is None else context.latest_review,
@@ -94,6 +101,12 @@ class ProductionController:
     ) -> None:
         self._workspace.initialize_team(team_name, [TeamMember(id="member-1", name=member_name)])
         self._workspace.initialize_assignment(title, requirements)
+
+    def create_assignment(self, assignment_id: str, title: str, requirements: str) -> None:
+        self._workspace.create_assignment(assignment_id, title, requirements)
+
+    def activate_assignment(self, assignment_id: str) -> None:
+        self._workspace.activate_assignment(assignment_id)
 
     def activate_course(self, course_id: str) -> None:
         active = self._courses.get_active()
@@ -151,7 +164,7 @@ class ProductionController:
         agent = self._build_agent(context)
         enriched_message = (
             f"业务上下文：{context.model_dump_json()}\n"
-            f"唯一大作业：{self._workspace.get_assignment().model_dump_json()}\n"
+            f"当前题目：{self._workspace.get_assignment().model_dump_json()}\n"
             f"用户请求：{message}"
         )
         output = self._run_sdk(agent, enriched_message)
@@ -161,7 +174,12 @@ class ProductionController:
         return output.final_response
 
     def _run_sdk(self, agent: Agent[None], message: str) -> MainAgentResult:
-        result = Runner.run_sync(agent, message, session=self._sessions.session("main_team"))
+        assignment_id = self._workspace.get_assignment().id
+        result = Runner.run_sync(
+            agent,
+            message,
+            session=self._sessions.session(f"main_team_{assignment_id}"),
+        )
         return MainAgentResult.model_validate(result.final_output)
 
     def _run_review_then_revision(
@@ -244,7 +262,7 @@ class ProductionController:
 
         @function_tool
         def get_assignment() -> str:
-            """Return the singleton assignment and its rubric."""
+            """Return the active assignment question and its rubric."""
             return self._workspace.get_assignment().model_dump_json()
 
         @function_tool
@@ -293,7 +311,37 @@ def render(view: WorkspaceView, controller: AppController) -> None:
                 controller.create_course(course_id, course_name, course_date, teacher, topic)
                 st.rerun()
 
-    materials, conversation, workspace = st.tabs(["课程资料", "Agent 对话", "唯一大作业"])
+        st.divider()
+        active_assignment = view.assignment
+        st.metric("当前题目", active_assignment.title)
+        selected_assignment = st.selectbox(
+            "切换题目",
+            view.assignments,
+            index=next(
+                index
+                for index, assignment in enumerate(view.assignments)
+                if assignment.id == active_assignment.id
+            ),
+            format_func=lambda assignment: assignment.title,
+        )
+        if (
+            selected_assignment is not None
+            and selected_assignment.id != active_assignment.id
+            and st.button("确认切换题目")
+        ):
+            controller.activate_assignment(selected_assignment.id)
+            st.rerun()
+        with st.expander("新增题目"):
+            assignment_id = st.text_input("题目 ID")
+            assignment_title = st.text_input("题目标题")
+            assignment_requirements = st.text_area("题目要求")
+            if st.button("创建题目"):
+                controller.create_assignment(
+                    assignment_id, assignment_title, assignment_requirements
+                )
+                st.rerun()
+
+    materials, conversation, workspace = st.tabs(["课程资料", "Agent 对话", "作业"])
     with materials:
         active_course = view.active_course
         if active_course is None:
@@ -343,7 +391,7 @@ def main() -> None:
         try:
             view = controller.view()
         except KeyError:
-            st.title("初始化唯一小组大作业")
+            st.title("初始化小组与首道题")
             with st.form("workspace-setup"):
                 team = st.text_input("小组名称")
                 member = st.text_input("首位成员")

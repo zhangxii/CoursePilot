@@ -52,6 +52,7 @@ def context() -> CourseContext:
     return CourseContext(
         active_course_id="architecture-20260717",
         active_course_name="架构设计",
+        active_assignment_id="assignment-1",
     )
 
 

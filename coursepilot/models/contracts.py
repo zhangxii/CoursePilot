@@ -110,7 +110,7 @@ class Team(Contract):
 
 
 class Assignment(Contract):
-    id: Literal["main_assignment"] = "main_assignment"
+    id: NonEmptyText
     team_id: Literal["main_team"] = "main_team"
     title: NonEmptyText
     requirements: NonEmptyText
@@ -119,7 +119,7 @@ class Assignment(Contract):
 
 class AnswerRecord(Contract):
     id: NonEmptyText
-    assignment_id: Literal["main_assignment"] = "main_assignment"
+    assignment_id: NonEmptyText
     version: PositiveVersion
     content: NonEmptyText
     operated_by_member_id: NonEmptyText
@@ -217,7 +217,7 @@ class CourseContext(Contract):
     active_course_id: NonEmptyText
     active_course_name: NonEmptyText
     team_id: Literal["main_team"] = "main_team"
-    assignment_id: Literal["main_assignment"] = "main_assignment"
+    active_assignment_id: NonEmptyText
     current_answer: str | None = None
     latest_review: ReviewResult | None = None
     answer_version: PositiveVersion = 1

@@ -32,7 +32,11 @@ class Generator:
 
 
 def context() -> CourseContext:
-    return CourseContext(active_course_id="architecture", active_course_name="Architecture")
+    return CourseContext(
+        active_course_id="architecture",
+        active_course_name="Architecture",
+        active_assignment_id="assignment-1",
+    )
 
 
 def valid_notes() -> dict[str, Any]:

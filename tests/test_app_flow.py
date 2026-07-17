@@ -52,7 +52,7 @@ def test_first_use_flow_initializes_workspace_and_activates_first_course(
 
     assert not app.exception
     assert (data_path / "workspace.yaml").is_file()
-    assert (data_path / "assignment" / "assignment.md").is_file()
+    assert (data_path / "assignments" / "assignment-1" / "assignment.md").is_file()
 
     app = AppTest.from_file("coursepilot/app.py", default_timeout=10)
     app.run()
@@ -61,7 +61,7 @@ def test_first_use_flow_initializes_workspace_and_activates_first_course(
     sidebar_inputs[1].set_value("software-engineering")
     sidebar_inputs[2].set_value("张老师")
     sidebar_inputs[3].set_value("需求与架构")
-    app.sidebar.button[-1].click().run()
+    next(button for button in app.sidebar.button if button.label == "创建课程").click().run()
 
     assert not app.exception
     index = (data_path / "courses" / "course-index.yaml").read_text(encoding="utf-8")
@@ -75,3 +75,21 @@ def test_first_use_flow_initializes_workspace_and_activates_first_course(
     metadata, body = parse_front_matter(materials[0].read_text(encoding="utf-8"))
     assert metadata["original_file_name"] == "第一周笔记.txt"
     assert body.strip() == "课程正文"
+
+    next(item for item in app.sidebar.text_input if item.label == "题目 ID").set_value(
+        "assignment-2"
+    )
+    next(item for item in app.sidebar.text_input if item.label == "题目标题").set_value("第二道题")
+    next(item for item in app.sidebar.text_area if item.label == "题目要求").set_value(
+        "完成第二份报告"
+    )
+    next(button for button in app.sidebar.button if button.label == "创建题目").click().run()
+
+    assert not app.exception
+    assignment_index = (data_path / "assignments" / "assignment-index.yaml").read_text(
+        encoding="utf-8"
+    )
+    assert "active_assignment_id: assignment-2" in assignment_index
+    assert (data_path / "assignments" / "assignment-2" / "assignment.md").is_file()
+    assignment_selector = next(item for item in app.sidebar.selectbox if item.label == "切换题目")
+    assert assignment_selector.value.id == "assignment-2"

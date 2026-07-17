@@ -3,14 +3,17 @@ from pathlib import Path
 
 import pytest
 
+from coursepilot.file_store import FileDataStore, render_front_matter
 from coursepilot.models import (
     AgentKind,
     AssignmentResult,
     Course,
     DimensionScore,
     MainAgentResult,
+    ReviewRecord,
     ReviewResult,
     RevisionMode,
+    RevisionRecord,
     RevisionResult,
     SourceRef,
     TeamMember,
@@ -118,16 +121,77 @@ def test_invalid_revision_rolls_back_answer_and_revision_together(tmp_path: Path
     )
 
 
-def test_second_team_and_assignment_are_rejected(tmp_path: Path) -> None:
+def test_second_team_is_rejected_but_multiple_assignments_are_isolated(tmp_path: Path) -> None:
     data_root = tmp_path / "data"
-    service = WorkspaceService(WorkspaceRepository(data_root))
+    repository = WorkspaceRepository(data_root)
+    service = WorkspaceService(repository)
     service.initialize_team("One", [TeamMember(id="alice", name="Alice")])
-    service.initialize_assignment("Only assignment", "Do it")
+    first_assignment = service.initialize_assignment("First assignment", "Do it")
+    first_answer = service.save_answer("First answer", "alice")
+    service.save_review(first_answer.id, review())
 
     with pytest.raises(ValueError, match="one team"):
         service.initialize_team("Two", [TeamMember(id="bob", name="Bob")])
-    with pytest.raises(ValueError, match="one assignment"):
-        service.initialize_assignment("Second", "Not allowed")
+
+    second_assignment = service.create_assignment("assignment-2", "Second", "Also do it")
+    second_answer = service.save_answer("Second answer", "alice")
+
+    assert first_assignment.id != second_assignment.id
+    assert first_answer.assignment_id == first_assignment.id
+    assert second_answer.assignment_id == second_assignment.id
+    assert first_answer.version == second_answer.version == 1
+    assert repository.latest_review(second_answer.id) is None
+    service.activate_assignment(first_assignment.id)
+    assert service.get_assignment().id == first_assignment.id
+    assert service.latest_answer().content == "First answer"
+    assert service.save_answer("First answer v2", "alice").version == 2
+
+
+def test_legacy_single_assignment_files_migrate_without_losing_answer(tmp_path: Path) -> None:
+    data_root = tmp_path / "data"
+    store = FileDataStore(data_root)
+    store.write_text(
+        "assignment/assignment.md",
+        render_front_matter(
+            {"id": "main_assignment", "title": "Legacy question", "rubric": None},
+            "Legacy requirements",
+        ),
+    )
+    store.write_text(
+        "assignment/answers/0001.md",
+        render_front_matter(
+            {"id": "legacy-answer", "version": 1, "operated_by_member_id": "alice"},
+            "Legacy answer",
+        ),
+    )
+    store.write_text(
+        "assignment/answers/0002.md",
+        render_front_matter(
+            {"id": "legacy-answer-2", "version": 2, "operated_by_member_id": "alice"},
+            "Legacy revised answer",
+        ),
+    )
+    legacy_review = ReviewRecord(id="legacy-review", answer_id="legacy-answer", result=review())
+    store.write_yaml("assignment/reviews/legacy-review.yaml", legacy_review.model_dump(mode="json"))
+    legacy_revision = RevisionRecord(
+        id="legacy-revision",
+        source_answer_id="legacy-answer",
+        review_id=legacy_review.id,
+        result_answer_id="legacy-answer-2",
+        mode=RevisionMode.CONSERVATIVE,
+        change_summary="Legacy changes",
+    )
+    store.write_yaml("assignment/revisions/0002.yaml", legacy_revision.model_dump(mode="json"))
+
+    repository = WorkspaceRepository(data_root)
+
+    assert repository.get_assignment().id == "assignment-1"
+    assert repository.latest_answer().content == "Legacy revised answer"
+    assert repository.latest_answer().assignment_id == "assignment-1"
+    migrated_review = repository.latest_review("legacy-answer")
+    migrated_revision = repository.latest_revision()
+    assert migrated_review is not None and migrated_review.id == "legacy-review"
+    assert migrated_revision is not None and migrated_revision.id == "legacy-revision"
 
 
 def test_agent_outputs_are_persisted_as_shared_reviewed_revision(tmp_path: Path) -> None:
@@ -233,3 +297,39 @@ def test_agent_output_transaction_rolls_back_answer_when_revision_has_no_review(
         service.apply_agent_output(course, output, "alice")
 
     assert repository.latest_answer() is None
+
+
+def test_agent_output_for_a_stale_assignment_is_rejected(tmp_path: Path) -> None:
+    data_root = tmp_path / "data"
+    repository = WorkspaceRepository(data_root)
+    service = WorkspaceService(repository)
+    service.initialize_team("Group", [TeamMember(id="alice", name="Alice")])
+    first = service.initialize_assignment("First", "Do first")
+    course = Course(
+        id="architecture",
+        name="Architecture",
+        course_date=date(2026, 7, 17),
+        teacher="Teacher",
+        topic="Design",
+        is_active=True,
+    )
+    stale_context = service.context(course)
+    second = service.create_assignment("assignment-2", "Second", "Do second")
+    output = MainAgentResult(
+        intent=AgentKind.ASSIGNMENT,
+        invoked_agents=[AgentKind.ASSIGNMENT],
+        final_response="Draft",
+        context=stale_context,
+        assignment_output=AssignmentResult(
+            task_understanding="Task",
+            shared_answer="Wrong target",
+            course_evidence=[],
+            uncertainties=[],
+        ),
+    )
+
+    with pytest.raises(ValueError, match="does not match"):
+        service.apply_agent_output(course, output, "alice")
+
+    assert first.id != second.id
+    assert repository.latest_answer(second.id) is None

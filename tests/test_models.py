@@ -29,7 +29,7 @@ def source() -> SourceRef:
     )
 
 
-def test_core_domain_models_accept_the_single_team_assignment_context() -> None:
+def test_core_domain_models_accept_an_active_assignment_context() -> None:
     material = MaterialMetadata(
         course_id="course-1",
         course_name="架构设计",
@@ -43,19 +43,22 @@ def test_core_domain_models_accept_the_single_team_assignment_context() -> None:
         name="CoursePilot 小组",
         members=[TeamMember(id="member-1", name="张同学", role="组长")],
     )
-    assignment = Assignment(title="CoursePilot 大作业", requirements="完成系统设计")
+    assignment = Assignment(
+        id="assignment-1", title="CoursePilot 大作业", requirements="完成系统设计"
+    )
     context = CourseContext(
         active_course_id="course-1",
         active_course_name="架构设计",
+        active_assignment_id=assignment.id,
         current_answer="初稿",
     )
 
     assert material.material_type is MaterialType.MARKDOWN
     assert team.id == "main_team"
-    assert assignment.id == "main_assignment"
+    assert assignment.id == "assignment-1"
     assert assignment.team_id == team.id
     assert context.team_id == team.id
-    assert context.assignment_id == assignment.id
+    assert context.active_assignment_id == assignment.id
 
 
 def test_review_result_requires_consistent_bounded_scores() -> None:

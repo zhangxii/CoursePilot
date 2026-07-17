@@ -45,7 +45,11 @@ def test_uploaded_markdown_gets_front_matter_and_retrieval_returns_only_body(
     result = asyncio.run(
         search_current_course(
             "module boundaries",
-            CourseContext(active_course_id="current", active_course_name="Module Design"),
+            CourseContext(
+                active_course_id="current",
+                active_course_name="Module Design",
+                active_assignment_id="assignment-1",
+            ),
             gateway=LocalMaterialSearchGateway(repository),
         )
     )

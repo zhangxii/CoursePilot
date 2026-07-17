@@ -331,6 +331,7 @@ get_review_result
 class CourseContext(BaseModel):
     active_course_id: str
     active_course_name: str
+    active_assignment_id: str | None
     assignment_title: str | None
     assignment_requirements: str | None
     current_answer: str | None

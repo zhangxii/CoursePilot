@@ -36,6 +36,7 @@ def context(*, reviewed: bool = False) -> CourseContext:
     return CourseContext(
         active_course_id="architecture",
         active_course_name="Architecture",
+        active_assignment_id="assignment-1",
         current_answer="draft",
         latest_review=_review() if reviewed else None,
     )

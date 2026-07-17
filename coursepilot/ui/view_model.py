@@ -17,6 +17,7 @@ class WorkspaceView(BaseModel):
 
     team: Team
     courses: list[Course]
+    assignments: list[Assignment]
     assignment: Assignment
     answer: str | None
     answer_version: int
@@ -30,4 +31,4 @@ class WorkspaceView(BaseModel):
 
     @property
     def can_create_assignment(self) -> bool:
-        return False
+        return True
