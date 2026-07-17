@@ -6,7 +6,7 @@ from typing import Annotated, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from coursepilot.models import CourseContext, SourceRef
+from coursepilot.models import CourseContext, MaterialSearchAttributes, MaterialStatus, SourceRef
 
 FilterValue = str | float | bool
 
@@ -51,7 +51,7 @@ class RemoteSearchHit(BaseModel):
     file_id: str
     filename: str
     score: float
-    attributes: dict[str, FilterValue]
+    attributes: MaterialSearchAttributes
     text: str
 
 
@@ -106,22 +106,21 @@ async def search_current_course(
 ) -> SearchResult:
     _validate_search(query, max_results)
     filters = ComparisonFilter(type="eq", key="course_id", value=context.active_course_id)
-    remote_hits = await gateway.search(query, filters, max_results)
-    hits = [
-        item for item in remote_hits if item.attributes.get("course_id") == context.active_course_id
-    ]
-    result = SearchResult(
-        items=[_to_search_item(hit) for hit in hits],
-        scope=SearchScope.CURRENT,
-        query=query,
-    )
     _record(
         trace,
         "search_current_course",
         active_course_id=context.active_course_id,
-        result_count=str(len(result.items)),
+        max_results=str(max_results),
     )
-    return result
+    return await _execute_search(
+        query=query,
+        context=context,
+        gateway=gateway,
+        filters=filters,
+        scope=SearchScope.CURRENT,
+        max_results=max_results,
+        trace=trace,
+    )
 
 
 async def search_course_archive(
@@ -136,24 +135,62 @@ async def search_course_archive(
     if not isinstance(reason, ArchiveSearchReason):
         raise InvalidArchiveSearchReason("an approved archive search reason is required")
     _validate_search(query, max_results)
-    filters = ComparisonFilter(type="ne", key="course_id", value=context.active_course_id)
-    remote_hits = await gateway.search(query, filters, max_results)
-    hits = [
-        item for item in remote_hits if item.attributes.get("course_id") != context.active_course_id
-    ]
-    result = SearchResult(
-        items=[_to_search_item(hit) for hit in hits],
-        scope=SearchScope.ARCHIVE,
-        query=query,
-        reason=reason,
+    filters = CompoundFilter(
+        type="and",
+        filters=[
+            ComparisonFilter(type="ne", key="course_id", value=context.active_course_id),
+            ComparisonFilter(type="eq", key="status", value=MaterialStatus.ARCHIVED.value),
+        ],
     )
     _record(
         trace,
         "search_course_archive",
         active_course_id=context.active_course_id,
         reason=reason.value,
-        result_count=str(len(result.items)),
+        max_results=str(max_results),
     )
+    return await _execute_search(
+        query=query,
+        context=context,
+        gateway=gateway,
+        filters=filters,
+        scope=SearchScope.ARCHIVE,
+        max_results=max_results,
+        trace=trace,
+        reason=reason,
+    )
+
+
+async def _execute_search(
+    *,
+    query: str,
+    context: CourseContext,
+    gateway: SearchGateway,
+    filters: SearchFilter,
+    scope: SearchScope,
+    max_results: int,
+    trace: TraceRecorder | None,
+    reason: ArchiveSearchReason | None = None,
+) -> SearchResult:
+    remote_hits = await gateway.search(query, filters, max_results)
+    if scope is SearchScope.CURRENT:
+        hits = [hit for hit in remote_hits if hit.attributes.course_id == context.active_course_id]
+    else:
+        hits = [
+            hit
+            for hit in remote_hits
+            if hit.attributes.course_id != context.active_course_id
+            and hit.attributes.status is MaterialStatus.ARCHIVED
+        ]
+    result = SearchResult(
+        items=[_to_search_item(hit) for hit in hits], scope=scope, query=query, reason=reason
+    )
+    completed_event = (
+        "search_current_course.completed"
+        if scope is SearchScope.CURRENT
+        else "search_course_archive.completed"
+    )
+    _record(trace, completed_event, result_count=str(len(result.items)))
     return result
 
 
@@ -171,7 +208,7 @@ def _to_search_item(hit: RemoteSearchHit) -> SearchItem:
         source=SourceRef(
             material_id=hit.file_id,
             file_name=hit.filename,
-            course_id=str(hit.attributes["course_id"]),
+            course_id=hit.attributes.course_id,
             page_or_section=page_or_section,
             excerpt=hit.text,
         ),

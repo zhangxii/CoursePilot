@@ -67,6 +67,20 @@ class MaterialMetadata(Contract):
     status: MaterialStatus
 
 
+class MaterialSearchAttributes(Contract):
+    course_id: NonEmptyText
+    course_name: NonEmptyText
+    course_date: date
+    teacher: NonEmptyText
+    topic: NonEmptyText
+    material_type: MaterialType
+    status: MaterialStatus
+
+    @classmethod
+    def from_metadata(cls, metadata: MaterialMetadata) -> "MaterialSearchAttributes":
+        return cls.model_validate(metadata.model_dump())
+
+
 class MaterialRecord(Contract):
     id: NonEmptyText
     course_id: NonEmptyText

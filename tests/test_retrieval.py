@@ -2,7 +2,12 @@ import asyncio
 
 import pytest
 
-from coursepilot.models import CourseContext
+from coursepilot.models import (
+    CourseContext,
+    MaterialSearchAttributes,
+    MaterialStatus,
+    MaterialType,
+)
 from coursepilot.retrieval import (
     ArchiveSearchReason,
     ComparisonFilter,
@@ -31,6 +36,16 @@ class FakeSearchGateway:
         return self.hits
 
 
+class FailingSearchGateway:
+    async def search(
+        self,
+        query: str,
+        filters: ComparisonFilter | CompoundFilter,
+        max_results: int,
+    ) -> list[RemoteSearchHit]:
+        raise RuntimeError("search unavailable")
+
+
 def context() -> CourseContext:
     return CourseContext(
         active_course_id="architecture-20260717",
@@ -43,7 +58,15 @@ def hit(course_id: str, status: str = "current") -> RemoteSearchHit:
         file_id="file-1",
         filename="architecture.md",
         score=0.91,
-        attributes={"course_id": course_id, "status": status},
+        attributes=MaterialSearchAttributes(
+            course_id=course_id,
+            course_name="Architecture",
+            course_date="2026-07-17",
+            teacher="Teacher",
+            topic="Architecture",
+            material_type=MaterialType.PDF,
+            status=MaterialStatus(status),
+        ),
         text="## PDF 第 12 页\n\n模块应当具有清晰边界。",
     )
 
@@ -92,8 +115,12 @@ def test_archive_search_excludes_active_course_and_records_reason() -> None:
     assert result.scope is SearchScope.ARCHIVE
     assert result.reason is ArchiveSearchReason.PREREQUISITE_REFERENCED
     assert [item.source.course_id for item in result.items] == ["requirements-20260701"]
-    assert gateway.calls[0][1] == ComparisonFilter(
-        type="ne", key="course_id", value="architecture-20260717"
+    assert gateway.calls[0][1] == CompoundFilter(
+        type="and",
+        filters=[
+            ComparisonFilter(type="ne", key="course_id", value="architecture-20260717"),
+            ComparisonFilter(type="eq", key="status", value="archived"),
+        ],
     )
     assert trace.events[0].attributes["reason"] == "prerequisite_referenced"
 
@@ -112,3 +139,20 @@ def test_archive_search_rejects_missing_or_unrecognised_reason() -> None:
         )
 
     assert gateway.calls == []
+
+
+def test_archive_search_traces_approved_reason_even_when_gateway_fails() -> None:
+    trace = MemoryTraceRecorder()
+
+    with pytest.raises(RuntimeError, match="search unavailable"):
+        asyncio.run(
+            search_course_archive(
+                "history",
+                ArchiveSearchReason.USER_REQUESTED,
+                context(),
+                gateway=FailingSearchGateway(),
+                trace=trace,
+            )
+        )
+
+    assert trace.events[0].attributes["reason"] == "user_requested"

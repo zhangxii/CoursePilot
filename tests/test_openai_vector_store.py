@@ -35,7 +35,15 @@ class FakeVectorStoresResource:
             file_id="file-1",
             filename="architecture.md",
             score=0.93,
-            attributes={"course_id": "architecture-20260717"},
+            attributes={
+                "course_id": "architecture-20260717",
+                "course_name": "Architecture",
+                "course_date": "2026-07-17",
+                "teacher": "Teacher",
+                "topic": "Architecture",
+                "material_type": "pdf",
+                "status": "current",
+            },
             content=[SimpleNamespace(text="## PDF 第 1 页\n\nContent")],
         )
         return SimpleNamespace(data=[item])

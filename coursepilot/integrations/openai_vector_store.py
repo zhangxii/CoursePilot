@@ -6,7 +6,7 @@ from openai import AsyncOpenAI
 from openai.types import vector_store_search_params
 
 from coursepilot.ingestion import PreparedDocument, RemoteFileRef
-from coursepilot.models import IndexStatus
+from coursepilot.models import IndexStatus, MaterialSearchAttributes
 from coursepilot.retrieval import RemoteSearchHit
 from coursepilot.retrieval.search import SearchFilter
 
@@ -20,7 +20,7 @@ class OpenAIVectorStoreGateway:
         response = await self._client.vector_stores.files.upload_and_poll(
             vector_store_id=self._vector_store_id,
             file=(document.file_name, document.markdown.encode("utf-8"), "text/markdown"),
-            attributes=document.attributes(),
+            attributes=document.search_attributes().model_dump(mode="json"),
         )
         status = IndexStatus.INDEXED if response.status == "completed" else IndexStatus.FAILED
         return RemoteFileRef(remote_file_id=response.id, status=status)
@@ -48,7 +48,7 @@ class OpenAIVectorStoreGateway:
                 file_id=item.file_id,
                 filename=item.filename,
                 score=item.score,
-                attributes=dict(item.attributes or {}),
+                attributes=MaterialSearchAttributes.model_validate(item.attributes or {}),
                 text="\n\n".join(content.text for content in item.content),
             )
             for item in response.data

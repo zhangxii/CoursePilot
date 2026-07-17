@@ -41,15 +41,11 @@ class CourseService:
             raise CourseNotFoundError("no active course")
         return course
 
-    def activate(
-        self, course_id: str, context: CourseContext | None = None
-    ) -> CourseContext | None:
+    def activate(self, course_id: str, context: CourseContext) -> CourseContext:
         try:
             course = self._repository.activate(course_id)
         except KeyError as error:
             raise CourseNotFoundError(course_id) from error
-        if context is None:
-            return None
         return context.model_copy(
             update={"active_course_id": course.id, "active_course_name": course.name}
         )

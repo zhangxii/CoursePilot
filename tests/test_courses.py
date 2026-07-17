@@ -62,7 +62,11 @@ def test_activating_unknown_course_preserves_the_current_course(tmp_path: Path) 
         topic="系统需求与 DFX",
     )
 
+    context = CourseContext(
+        active_course_id=active.id,
+        active_course_name=active.name,
+    )
     with pytest.raises(CourseNotFoundError):
-        service.activate("missing-course")
+        service.activate("missing-course", context)
 
     assert service.get_active().id == active.id

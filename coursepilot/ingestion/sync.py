@@ -17,6 +17,7 @@ from coursepilot.models import (
     IndexStatus,
     MaterialMetadata,
     MaterialRecord,
+    MaterialSearchAttributes,
 )
 from coursepilot.repositories import MaterialRepository
 
@@ -37,16 +38,8 @@ class PreparedDocument(BaseModel):
     file_hash: str
     metadata: MaterialMetadata
 
-    def attributes(self) -> dict[str, str | float | bool]:
-        return {
-            "course_id": self.metadata.course_id,
-            "course_name": self.metadata.course_name,
-            "course_date": self.metadata.course_date.isoformat(),
-            "teacher": self.metadata.teacher,
-            "topic": self.metadata.topic,
-            "material_type": self.metadata.material_type.value,
-            "status": self.metadata.status.value,
-        }
+    def search_attributes(self) -> MaterialSearchAttributes:
+        return MaterialSearchAttributes.from_metadata(self.metadata)
 
 
 class RemoteFileRef(BaseModel):
