@@ -45,7 +45,7 @@ class CompoundFilter(BaseModel):
 SearchFilter = ComparisonFilter | CompoundFilter
 
 
-class RemoteSearchHit(BaseModel):
+class MaterialSearchHit(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     file_id: str
@@ -109,7 +109,7 @@ class MemoryTraceRecorder:
 class SearchGateway(Protocol):
     async def search(
         self, query: str, filters: SearchFilter, max_results: int
-    ) -> list[RemoteSearchHit]: ...
+    ) -> list[MaterialSearchHit]: ...
 
 
 async def search_current_course(
@@ -188,13 +188,13 @@ async def _execute_search(
     trace: TraceRecorder | None,
     reason: ArchiveSearchReason | None = None,
 ) -> SearchResult:
-    remote_hits = await gateway.search(query, filters, max_results)
+    search_hits = await gateway.search(query, filters, max_results)
     if scope is SearchScope.CURRENT:
-        hits = [hit for hit in remote_hits if hit.attributes.course_id == context.active_course_id]
+        hits = [hit for hit in search_hits if hit.attributes.course_id == context.active_course_id]
     else:
         hits = [
             hit
-            for hit in remote_hits
+            for hit in search_hits
             if hit.attributes.course_id != context.active_course_id
             and hit.attributes.status is MaterialStatus.ARCHIVED
         ]
@@ -217,7 +217,7 @@ def _validate_search(query: str, max_results: int) -> None:
         raise ValueError("max_results must be positive")
 
 
-def _to_search_item(hit: RemoteSearchHit) -> SearchItem:
+def _to_search_item(hit: MaterialSearchHit) -> SearchItem:
     heading = re.search(r"^##\s+(.+)$", hit.text, flags=re.MULTILINE)
     page_or_section = heading.group(1).strip() if heading else "检索片段"
     return SearchItem(

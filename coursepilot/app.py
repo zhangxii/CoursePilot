@@ -6,14 +6,20 @@ from pathlib import Path
 from typing import Protocol
 
 import streamlit as st
-from agents import Agent, Runner, custom_span, function_tool
+from agents import (
+    Agent,
+    Runner,
+    custom_span,
+    function_tool,
+    set_default_openai_client,
+    set_tracing_disabled,
+)
 from openai import AsyncOpenAI
 
 from coursepilot.agents import SqliteAgentRuntime, build_sdk_main_agent
 from coursepilot.config import load_settings
 from coursepilot.database import initialize_database
 from coursepilot.ingestion import MaterialIngestionService, UploadValidator
-from coursepilot.integrations import OpenAIVectorStoreGateway
 from coursepilot.models import (
     Course,
     CourseContext,
@@ -26,6 +32,7 @@ from coursepilot.repositories import CourseRepository, MaterialRepository, Works
 from coursepilot.retrieval import (
     ArchiveSearchReason,
     CurrentFirstPolicy,
+    LocalMaterialSearchGateway,
     search_course_archive,
     search_current_course,
 )
@@ -55,9 +62,15 @@ class ProductionController:
         self._courses = CourseRepository(settings.database_path)
         self._materials = MaterialRepository(settings.database_path)
         self._workspace = WorkspaceService(WorkspaceRepository(settings.database_path))
-        self._vector = OpenAIVectorStoreGateway(
-            AsyncOpenAI(api_key=settings.openai_api_key.get_secret_value()),
-            settings.vector_store_id,
+        llm_client = AsyncOpenAI(
+            api_key=settings.llm_api_key.get_secret_value(),
+            base_url=settings.llm_base_url,
+        )
+        set_default_openai_client(llm_client, use_for_tracing=False)
+        set_tracing_disabled(True)
+        self._search = LocalMaterialSearchGateway(
+            self._materials,
+            full_context_chars=settings.full_context_chars,
         )
         self._sessions = SqliteAgentRuntime(settings.database_path.with_name("sessions.db"))
 
@@ -91,12 +104,12 @@ class ProductionController:
         if active is None:
             raise ValueError("请先初始化课程")
         context = self._workspace.context(active)
-        asyncio.run(CourseService(self._courses, self._vector).activate(course_id, context))
+        CourseService(self._courses).activate(course_id, context)
 
     def create_course(
         self, course_id: str, name: str, course_date: date, teacher: str, topic: str
     ) -> None:
-        CourseService(self._courses, self._vector).create(
+        CourseService(self._courses).create(
             course_id=course_id,
             name=name,
             course_date=course_date,
@@ -125,7 +138,6 @@ class ProductionController:
         )
         ingestion = MaterialIngestionService(
             repository=self._materials,
-            gateway=self._vector,
             validator=validator,
         )
         asyncio.run(ingestion.ingest(path, metadata))
@@ -207,7 +219,7 @@ class ProductionController:
                 result = await search_current_course(
                     query,
                     context,
-                    gateway=self._vector,
+                    gateway=self._search,
                     max_results=self._settings.max_search_results,
                 )
             retrieval_policy.record_current_search()
@@ -229,7 +241,7 @@ class ProductionController:
                     query,
                     reason,
                     context,
-                    gateway=self._vector,
+                    gateway=self._search,
                     max_results=self._settings.max_search_results,
                 )
             return result.model_dump_json()
@@ -288,8 +300,8 @@ def render(view: WorkspaceView, controller: AppController) -> None:
     materials, conversation, workspace = st.tabs(["课程资料", "Agent 对话", "唯一大作业"])
     with materials:
         upload = st.file_uploader("上传 PDF/PPTX", type=["pdf", "pptx"])
-        if upload is not None and st.button("解析并索引"):
-            with st.status("正在解析、上传并等待索引"):
+        if upload is not None and st.button("解析并保存"):
+            with st.status("正在解析并保存到本地资料库"):
                 controller.upload_material(upload.name, upload.getvalue())
         for material in view.materials:
             st.write(material.file_name, material.index_status.value)

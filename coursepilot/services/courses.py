@@ -1,7 +1,6 @@
 """Course creation, listing, and active-course switching."""
 
 from datetime import date
-from typing import Protocol
 
 from coursepilot.models import Course, CourseContext
 from coursepilot.repositories import CourseRepository
@@ -11,18 +10,9 @@ class CourseNotFoundError(LookupError):
     """Raised when an operation targets an unknown course."""
 
 
-class CourseStatusGateway(Protocol):
-    async def activate_course(self, course_id: str) -> None: ...
-
-
 class CourseService:
-    def __init__(
-        self,
-        repository: CourseRepository,
-        status_gateway: CourseStatusGateway | None = None,
-    ) -> None:
+    def __init__(self, repository: CourseRepository) -> None:
         self._repository = repository
-        self._status_gateway = status_gateway
 
     def create(
         self,
@@ -51,14 +41,11 @@ class CourseService:
             raise CourseNotFoundError("no active course")
         return course
 
-    async def activate(self, course_id: str, context: CourseContext) -> CourseContext:
-        if self._status_gateway is None:
-            raise RuntimeError("course activation requires a status synchronization gateway")
+    def activate(self, course_id: str, context: CourseContext) -> CourseContext:
         try:
             self._repository.get(course_id)
         except KeyError as error:
             raise CourseNotFoundError(course_id) from error
-        await self._status_gateway.activate_course(course_id)
         try:
             course = self._repository.activate(course_id)
         except KeyError as error:

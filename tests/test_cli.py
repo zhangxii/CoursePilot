@@ -7,8 +7,7 @@ from coursepilot.config import load_settings
 
 
 def configure(monkeypatch: pytest.MonkeyPatch, database: Path) -> None:
-    monkeypatch.setenv("COURSEPILOT_OPENAI_API_KEY", "sk-never-print-this")
-    monkeypatch.setenv("COURSEPILOT_VECTOR_STORE_ID", "vs_test")
+    monkeypatch.setenv("COURSEPILOT_LLM_API_KEY", "never-print-this")
     monkeypatch.setenv("COURSEPILOT_DATABASE_PATH", str(database))
     load_settings.cache_clear()
 
@@ -23,7 +22,7 @@ def test_check_config_reports_safe_summary(
     output = capsys.readouterr().out
     assert exit_code == 0
     assert "Configuration valid" in output
-    assert "sk-never-print-this" not in output
+    assert "never-print-this" not in output
 
 
 def test_init_db_creates_configured_database(

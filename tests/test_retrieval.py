@@ -14,8 +14,8 @@ from coursepilot.retrieval import (
     CompoundFilter,
     CurrentFirstPolicy,
     InvalidArchiveSearchReason,
+    MaterialSearchHit,
     MemoryTraceRecorder,
-    RemoteSearchHit,
     SearchScope,
     merge_evidence,
     search_course_archive,
@@ -24,7 +24,7 @@ from coursepilot.retrieval import (
 
 
 class FakeSearchGateway:
-    def __init__(self, hits: list[RemoteSearchHit]) -> None:
+    def __init__(self, hits: list[MaterialSearchHit]) -> None:
         self.hits = hits
         self.calls: list[tuple[str, ComparisonFilter | CompoundFilter, int]] = []
 
@@ -33,7 +33,7 @@ class FakeSearchGateway:
         query: str,
         filters: ComparisonFilter | CompoundFilter,
         max_results: int,
-    ) -> list[RemoteSearchHit]:
+    ) -> list[MaterialSearchHit]:
         self.calls.append((query, filters, max_results))
         return self.hits
 
@@ -44,7 +44,7 @@ class FailingSearchGateway:
         query: str,
         filters: ComparisonFilter | CompoundFilter,
         max_results: int,
-    ) -> list[RemoteSearchHit]:
+    ) -> list[MaterialSearchHit]:
         raise RuntimeError("search unavailable")
 
 
@@ -55,8 +55,8 @@ def context() -> CourseContext:
     )
 
 
-def hit(course_id: str, status: str = "current") -> RemoteSearchHit:
-    return RemoteSearchHit(
+def hit(course_id: str, status: str = "current") -> MaterialSearchHit:
+    return MaterialSearchHit(
         file_id="file-1",
         filename="architecture.md",
         score=0.91,

@@ -7,6 +7,7 @@ from uuid import uuid4
 from coursepilot.database import connect_database
 from coursepilot.models import (
     IndexStatus,
+    LocalMaterialDocument,
     MaterialMetadata,
     MaterialRecord,
     MaterialStatus,
@@ -74,37 +75,48 @@ class MaterialRepository:
             ).fetchall()
         return [_to_model(row) for row in rows]
 
+    def list_indexed_documents(self) -> list[LocalMaterialDocument]:
+        with connect_database(self._database_path) as connection:
+            rows = connection.execute(
+                """
+                SELECT m.id, m.course_id, m.file_name, m.file_hash, m.material_type,
+                       m.status, m.index_status, m.content_markdown, m.error,
+                       c.name, c.course_date, c.teacher, c.topic
+                FROM materials AS m
+                JOIN courses AS c ON c.id = m.course_id
+                WHERE m.index_status = 'indexed'
+                ORDER BY c.course_date DESC, m.created_at, m.id
+                """
+            ).fetchall()
+        return [
+            LocalMaterialDocument(
+                material=_to_model(row[:9]),
+                course_name=row[9],
+                course_date=row[10],
+                teacher=row[11],
+                topic=row[12],
+            )
+            for row in rows
+        ]
+
     def mark_pending(self, material_id: str) -> MaterialRecord:
-        return self._update_status(
-            material_id, IndexStatus.PENDING, remote_file_id=None, error=None
-        )
+        return self._update_status(material_id, IndexStatus.PENDING, error=None)
 
-    def mark_uploaded(self, material_id: str, remote_file_id: str) -> MaterialRecord:
-        return self._update_status(
-            material_id,
-            IndexStatus.UPLOADED,
-            remote_file_id=remote_file_id,
-            error=None,
-        )
-
-    def mark_indexed(self, material_id: str) -> MaterialRecord:
-        current = self.get(material_id)
+    def mark_indexed(self, material_id: str, content_markdown: str) -> MaterialRecord:
+        if not content_markdown.strip():
+            raise ValueError("indexed material content must not be blank")
         return self._update_status(
             material_id,
             IndexStatus.INDEXED,
-            remote_file_id=current.remote_file_id,
+            content_markdown=content_markdown,
             error=None,
         )
 
-    def mark_failed(
-        self, material_id: str, error: str, *, remote_file_id: str | None = None
-    ) -> MaterialRecord:
-        if remote_file_id is None:
-            remote_file_id = self.get(material_id).remote_file_id
+    def mark_failed(self, material_id: str, error: str) -> MaterialRecord:
         return self._update_status(
             material_id,
             IndexStatus.FAILED,
-            remote_file_id=remote_file_id,
+            content_markdown="",
             error=error,
         )
 
@@ -113,18 +125,18 @@ class MaterialRepository:
         material_id: str,
         status: IndexStatus,
         *,
-        remote_file_id: str | None,
+        content_markdown: str = "",
         error: str | None,
     ) -> MaterialRecord:
         with connect_database(self._database_path) as connection:
             cursor = connection.execute(
                 """
                 UPDATE materials
-                SET index_status = ?, remote_file_id = ?, error = ?,
+                SET index_status = ?, content_markdown = ?, error = ?,
                     updated_at = CURRENT_TIMESTAMP
                 WHERE id = ?
                 """,
-                (status.value, remote_file_id, error, material_id),
+                (status.value, content_markdown, error, material_id),
             )
             if cursor.rowcount != 1:
                 raise KeyError(material_id)
@@ -133,13 +145,13 @@ class MaterialRepository:
 
 _SELECT_MATERIAL = """
     SELECT id, course_id, file_name, file_hash, material_type, status,
-           index_status, remote_file_id, error
+           index_status, content_markdown, error
     FROM materials
 """
 
 
 def _to_model(
-    row: tuple[str, str, str, str, str, str, str, str | None, str | None],
+    row: tuple[str, str, str, str, str, str, str, str, str | None],
 ) -> MaterialRecord:
     return MaterialRecord(
         id=row[0],
@@ -149,6 +161,6 @@ def _to_model(
         material_type=MaterialType(row[4]),
         status=MaterialStatus(row[5]),
         index_status=IndexStatus(row[6]),
-        remote_file_id=row[7],
+        content_markdown=row[7],
         error=row[8],
     )

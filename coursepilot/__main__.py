@@ -35,7 +35,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(
             "Configuration valid: "
             f"model={settings.model_name}, "
-            f"vector_store={settings.vector_store_id}, "
+            f"llm_base_url={settings.llm_base_url or 'OpenAI default'}, "
             f"database={settings.database_path}"
         )
         return 0

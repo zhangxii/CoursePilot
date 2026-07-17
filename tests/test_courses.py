@@ -1,4 +1,3 @@
-import asyncio
 from datetime import date
 from pathlib import Path
 
@@ -10,21 +9,12 @@ from coursepilot.repositories import CourseRepository, MaterialRepository
 from coursepilot.services import CourseNotFoundError, CourseService
 
 
-class FakeCourseStatusGateway:
-    def __init__(self) -> None:
-        self.active_course_id: str | None = None
-
-    async def activate_course(self, course_id: str) -> None:
-        self.active_course_id = course_id
-
-
 def test_course_service_creates_lists_and_switches_the_single_active_course(
     tmp_path: Path,
 ) -> None:
     database = tmp_path / "coursepilot.db"
     initialize_database(database)
-    status_gateway = FakeCourseStatusGateway()
-    service = CourseService(CourseRepository(database), status_gateway)
+    service = CourseService(CourseRepository(database))
 
     first = service.create(
         course_id="requirements-20260701",
@@ -82,12 +72,11 @@ def test_course_service_creates_lists_and_switches_the_single_active_course(
         active_course_id=first.id,
         active_course_name=first.name,
     )
-    updated_context = asyncio.run(service.activate(second.id, context))
+    updated_context = service.activate(second.id, context)
 
     assert service.get_active().id == second.id
     assert updated_context.active_course_id == second.id
     assert updated_context.active_course_name == second.name
-    assert status_gateway.active_course_id == second.id
     assert sum(course.is_active for course in service.list_courses()) == 1
     assert materials.get(first_material.id).status is MaterialStatus.ARCHIVED
     assert materials.get(second_material.id).status is MaterialStatus.CURRENT
@@ -96,8 +85,7 @@ def test_course_service_creates_lists_and_switches_the_single_active_course(
 def test_activating_unknown_course_preserves_the_current_course(tmp_path: Path) -> None:
     database = tmp_path / "coursepilot.db"
     initialize_database(database)
-    status_gateway = FakeCourseStatusGateway()
-    service = CourseService(CourseRepository(database), status_gateway)
+    service = CourseService(CourseRepository(database))
     active = service.create(
         course_id="requirements-20260701",
         name="系统需求",
@@ -111,7 +99,6 @@ def test_activating_unknown_course_preserves_the_current_course(tmp_path: Path) 
         active_course_name=active.name,
     )
     with pytest.raises(CourseNotFoundError):
-        asyncio.run(service.activate("missing-course", context))
+        service.activate("missing-course", context)
 
     assert service.get_active().id == active.id
-    assert status_gateway.active_course_id is None

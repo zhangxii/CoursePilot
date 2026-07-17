@@ -1,5 +1,6 @@
 """Policy-enforced current and archived course retrieval."""
 
+from coursepilot.retrieval.local import LocalMaterialSearchGateway
 from coursepilot.retrieval.policy import CurrentFirstPolicy
 from coursepilot.retrieval.search import (
     ArchiveSearchReason,
@@ -7,8 +8,8 @@ from coursepilot.retrieval.search import (
     CompoundFilter,
     EvidenceSet,
     InvalidArchiveSearchReason,
+    MaterialSearchHit,
     MemoryTraceRecorder,
-    RemoteSearchHit,
     SearchGateway,
     SearchItem,
     SearchResult,
@@ -27,8 +28,9 @@ __all__ = [
     "CompoundFilter",
     "EvidenceSet",
     "InvalidArchiveSearchReason",
+    "LocalMaterialSearchGateway",
     "MemoryTraceRecorder",
-    "RemoteSearchHit",
+    "MaterialSearchHit",
     "SearchGateway",
     "SearchItem",
     "SearchResult",

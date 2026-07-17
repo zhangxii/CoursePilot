@@ -21,6 +21,9 @@ def test_initialize_database_is_idempotent_and_creates_required_schema(tmp_path:
         }
         foreign_keys = connection.execute("PRAGMA foreign_keys").fetchone()[0]
         migration_count = connection.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0]
+        material_columns = {
+            row[1] for row in connection.execute("PRAGMA table_info(materials)").fetchall()
+        }
 
     assert {
         "teams",
@@ -34,7 +37,9 @@ def test_initialize_database_is_idempotent_and_creates_required_schema(tmp_path:
         "schema_migrations",
     } <= tables
     assert foreign_keys == 1
-    assert migration_count == 4
+    assert migration_count == 5
+    assert "content_markdown" in material_columns
+    assert "remote_file_id" not in material_columns
 
 
 def test_database_rejects_second_team_and_second_assignment(tmp_path: Path) -> None:

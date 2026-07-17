@@ -19,9 +19,6 @@ class Contract(BaseModel):
 class MaterialType(StrEnum):
     PDF = "pdf"
     PPTX = "pptx"
-    NOTES = "notes"
-    ASSIGNMENT = "assignment"
-    FEEDBACK = "feedback"
 
 
 class MaterialStatus(StrEnum):
@@ -31,7 +28,6 @@ class MaterialStatus(StrEnum):
 
 class IndexStatus(StrEnum):
     PENDING = "pending"
-    UPLOADED = "uploaded"
     INDEXED = "indexed"
     FAILED = "failed"
 
@@ -89,8 +85,16 @@ class MaterialRecord(Contract):
     material_type: MaterialType
     status: MaterialStatus
     index_status: IndexStatus
-    remote_file_id: str | None = None
+    content_markdown: str = ""
     error: str | None = None
+
+
+class LocalMaterialDocument(Contract):
+    material: MaterialRecord
+    course_name: NonEmptyText
+    course_date: date
+    teacher: NonEmptyText
+    topic: NonEmptyText
 
 
 class TeamMember(Contract):

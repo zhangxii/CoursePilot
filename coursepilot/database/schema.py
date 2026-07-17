@@ -5,7 +5,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 INITIAL_SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS teams (
@@ -50,12 +50,11 @@ CREATE TABLE IF NOT EXISTS materials (
     file_name TEXT NOT NULL CHECK (length(trim(file_name)) > 0),
     file_hash TEXT NOT NULL,
     material_type TEXT NOT NULL CHECK (
-        material_type IN ('pdf', 'pptx', 'notes', 'assignment', 'feedback')
+        material_type IN ('pdf', 'pptx')
     ),
     status TEXT NOT NULL CHECK (status IN ('current', 'archived')),
-    remote_file_id TEXT,
     index_status TEXT NOT NULL DEFAULT 'pending' CHECK (
-        index_status IN ('pending', 'uploaded', 'indexed', 'failed')
+        index_status IN ('pending', 'indexed', 'failed')
     ),
     error TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -143,6 +142,38 @@ MIGRATIONS = {
     4: """
         ALTER TABLE revisions ADD COLUMN unresolved_issues_json TEXT NOT NULL DEFAULT '[]'
             CHECK (json_valid(unresolved_issues_json));
+    """,
+    5: """
+        DROP INDEX IF EXISTS idx_materials_course_status;
+        ALTER TABLE materials RENAME TO materials_legacy;
+        CREATE TABLE materials (
+            id TEXT PRIMARY KEY,
+            course_id TEXT NOT NULL,
+            file_name TEXT NOT NULL CHECK (length(trim(file_name)) > 0),
+            file_hash TEXT NOT NULL,
+            material_type TEXT NOT NULL CHECK (material_type IN ('pdf', 'pptx')),
+            status TEXT NOT NULL CHECK (status IN ('current', 'archived')),
+            index_status TEXT NOT NULL DEFAULT 'pending' CHECK (
+                index_status IN ('pending', 'indexed', 'failed')
+            ),
+            content_markdown TEXT NOT NULL DEFAULT '',
+            error TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (course_id) REFERENCES courses(id) ON DELETE CASCADE,
+            UNIQUE (course_id, file_hash)
+        );
+        INSERT INTO materials (
+            id, course_id, file_name, file_hash, material_type, status,
+            index_status, error, created_at, updated_at
+        )
+        SELECT id, course_id, file_name, file_hash, material_type, status,
+               CASE WHEN index_status = 'failed' THEN 'failed'
+                    ELSE 'pending' END,
+               error, created_at, updated_at
+        FROM materials_legacy;
+        DROP TABLE materials_legacy;
+        CREATE INDEX idx_materials_course_status ON materials(course_id, status);
     """,
 }
 
