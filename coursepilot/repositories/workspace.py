@@ -9,6 +9,7 @@ from coursepilot.models import (
     AnswerComparison,
     AnswerRecord,
     Assignment,
+    MainAgentResult,
     NotesResult,
     ReviewRecord,
     ReviewResult,
@@ -33,6 +34,75 @@ class WorkspaceRepository:
                 [(member.id, member.name, member.role) for member in members],
             )
         return self.get_team()
+
+    def apply_agent_output(self, course_id: str, output: MainAgentResult, member_id: str) -> None:
+        """Persist one agent result atomically across all affected business tables."""
+        note_id, answer_id, review_id, revision_id = (str(uuid4()) for _ in range(4))
+        with connect_database(self._database_path) as db:
+            if output.notes_output is not None:
+                db.execute(
+                    "INSERT INTO course_notes (id,course_id,result_json) VALUES (?,?,?)",
+                    (note_id, course_id, output.notes_output.model_dump_json()),
+                )
+            latest = db.execute(
+                "SELECT id,version FROM answers ORDER BY version DESC LIMIT 1"
+            ).fetchone()
+            if output.assignment_output is not None:
+                version = 1 if latest is None else latest[1] + 1
+                db.execute(
+                    "INSERT INTO answers (id,assignment_id,version,content,operated_by_member_id) "
+                    "VALUES (?,'main_assignment',?,?,?)",
+                    (answer_id, version, output.assignment_output.shared_answer, member_id),
+                )
+                latest = (answer_id, version)
+            if output.review_output is not None:
+                if latest is None:
+                    raise ValueError("review requires a shared answer")
+                db.execute(
+                    "INSERT INTO reviews (id,answer_id,result_json,total_score) VALUES (?,?,?,?)",
+                    (
+                        review_id,
+                        latest[0],
+                        output.review_output.model_dump_json(),
+                        output.review_output.total_score,
+                    ),
+                )
+            if output.revision_output is not None:
+                if latest is None:
+                    raise ValueError("revision requires a shared answer")
+                review_row = db.execute(
+                    "SELECT id FROM reviews WHERE answer_id=? "
+                    "ORDER BY created_at DESC,id DESC LIMIT 1",
+                    (latest[0],),
+                ).fetchone()
+                if review_row is None:
+                    raise ValueError("revision requires a review for the current answer")
+                result_answer_id = str(uuid4())
+                db.execute(
+                    "INSERT INTO answers (id,assignment_id,version,content,operated_by_member_id) "
+                    "VALUES (?,'main_assignment',?,?,?)",
+                    (
+                        result_answer_id,
+                        latest[1] + 1,
+                        output.revision_output.revised_answer,
+                        member_id,
+                    ),
+                )
+                db.execute(
+                    "INSERT INTO revisions (id,source_answer_id,review_id,result_answer_id,mode,"
+                    "change_summary,operated_by_member_id,unresolved_issues_json) "
+                    "VALUES (?,?,?,?,?,?,?,?)",
+                    (
+                        revision_id,
+                        latest[0],
+                        review_row[0],
+                        result_answer_id,
+                        output.revision_output.mode.value,
+                        "；".join(output.revision_output.changes),
+                        member_id,
+                        json.dumps(output.revision_output.unresolved_issues, ensure_ascii=False),
+                    ),
+                )
 
     def save_notes(self, course_id: str, result: NotesResult) -> str:
         note_id = str(uuid4())
@@ -158,6 +228,7 @@ class WorkspaceRepository:
         member_id: str,
         mode: RevisionMode,
         summary: str,
+        unresolved_issues: list[str] | None = None,
     ) -> tuple[AnswerRecord, RevisionRecord]:
         answer_id, revision_id = str(uuid4()), str(uuid4())
         revision = RevisionRecord(
@@ -167,6 +238,7 @@ class WorkspaceRepository:
             result_answer_id=answer_id,
             mode=mode,
             change_summary=summary,
+            unresolved_issues=unresolved_issues or [],
         )
         with connect_database(self._database_path) as db:
             db.execute(
@@ -176,19 +248,27 @@ class WorkspaceRepository:
             )
             db.execute(
                 "INSERT INTO revisions (id,source_answer_id,review_id,result_answer_id,mode,"
-                "change_summary,operated_by_member_id) VALUES (?,?,?,?,?,?,?)",
-                (revision_id, source.id, review.id, answer_id, mode.value, summary, member_id),
+                "change_summary,operated_by_member_id,unresolved_issues_json) "
+                "VALUES (?,?,?,?,?,?,?,?)",
+                (
+                    revision_id,
+                    source.id,
+                    review.id,
+                    answer_id,
+                    mode.value,
+                    summary,
+                    member_id,
+                    json.dumps(unresolved_issues or [], ensure_ascii=False),
+                ),
             )
         return self.get_answer(answer_id), revision
 
-    def compare_revision(
-        self, revision: RevisionRecord, unresolved_issues: list[str]
-    ) -> AnswerComparison:
+    def compare_revision(self, revision: RevisionRecord) -> AnswerComparison:
         source = self.get_answer(revision.source_answer_id)
         result = self.get_answer(revision.result_answer_id)
         review = self.latest_review(source.id)
         critical = [] if review is None else review.result.critical_issues
-        unresolved = [issue for issue in critical if issue in unresolved_issues]
+        unresolved = [issue for issue in critical if issue in revision.unresolved_issues]
         return AnswerComparison(
             source_version=source.version,
             result_version=result.version,
@@ -201,7 +281,8 @@ class WorkspaceRepository:
     def latest_revision(self) -> RevisionRecord | None:
         with connect_database(self._database_path) as db:
             row = db.execute(
-                "SELECT id,source_answer_id,review_id,result_answer_id,mode,change_summary "
+                "SELECT id,source_answer_id,review_id,result_answer_id,mode,change_summary,"
+                "unresolved_issues_json "
                 "FROM revisions ORDER BY created_at DESC,id DESC LIMIT 1"
             ).fetchone()
         if row is None:
@@ -213,4 +294,5 @@ class WorkspaceRepository:
             result_answer_id=row[3],
             mode=RevisionMode(row[4]),
             change_summary=row[5],
+            unresolved_issues=json.loads(row[6]),
         )

@@ -12,6 +12,7 @@ from coursepilot.retrieval import (
     ArchiveSearchReason,
     ComparisonFilter,
     CompoundFilter,
+    CurrentFirstPolicy,
     InvalidArchiveSearchReason,
     MemoryTraceRecorder,
     RemoteSearchHit,
@@ -189,3 +190,13 @@ def test_merge_keeps_current_course_first_and_marks_cross_course_conflict() -> N
 
     assert merged.items[0].source.course_id == "architecture-20260717"
     assert merged.has_cross_course_conflict is True
+
+
+def test_archive_permission_requires_current_search_first() -> None:
+    policy = CurrentFirstPolicy()
+
+    with pytest.raises(ValueError, match="prior current-course search"):
+        policy.authorize_archive(ArchiveSearchReason.CURRENT_EVIDENCE_INSUFFICIENT)
+
+    policy.record_current_search()
+    policy.authorize_archive(ArchiveSearchReason.CURRENT_EVIDENCE_INSUFFICIENT)

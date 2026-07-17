@@ -1,5 +1,6 @@
 """Policy-enforced current and archived course retrieval."""
 
+from coursepilot.retrieval.policy import CurrentFirstPolicy
 from coursepilot.retrieval.search import (
     ArchiveSearchReason,
     ComparisonFilter,
@@ -22,6 +23,7 @@ from coursepilot.retrieval.search import (
 __all__ = [
     "ArchiveSearchReason",
     "ComparisonFilter",
+    "CurrentFirstPolicy",
     "CompoundFilter",
     "EvidenceSet",
     "InvalidArchiveSearchReason",

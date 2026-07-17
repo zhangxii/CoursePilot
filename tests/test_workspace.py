@@ -82,7 +82,7 @@ def test_single_workspace_versions_review_and_revision_survive_restart(tmp_path:
     assert context.current_answer == "Version two with alternatives"
     assert context.answer_version == 2
     assert restored.get_assignment().title == "CoursePilot"
-    comparison = restored.compare_revision(revision, [])
+    comparison = restored.compare_revision(revision)
     assert comparison.operated_by_member_id == "alice"
     assert comparison.resolved_issues == ["Missing alternatives"]
 
@@ -185,3 +185,57 @@ def test_agent_outputs_are_persisted_as_shared_reviewed_revision(tmp_path: Path)
 
     assert restored.current_answer == "Revised draft"
     assert restored.answer_version == 2
+
+
+def test_agent_output_transaction_rolls_back_answer_when_revision_has_no_review(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "business.db"
+    initialize_database(database)
+    repository = WorkspaceRepository(database)
+    service = WorkspaceService(repository)
+    service.initialize_team("Group", [TeamMember(id="alice", name="Alice")])
+    service.initialize_assignment("Only", "Do it")
+    course = Course(
+        id="architecture",
+        name="Architecture",
+        course_date=date(2026, 7, 17),
+        teacher="Teacher",
+        topic="Design",
+        is_active=True,
+    )
+    from coursepilot.repositories import CourseRepository
+
+    CourseRepository(database).add(
+        course_id=course.id,
+        name=course.name,
+        course_date=course.course_date,
+        teacher=course.teacher,
+        topic=course.topic,
+        active=True,
+    )
+    output = MainAgentResult(
+        intent=AgentKind.REVISION,
+        invoked_agents=[AgentKind.REVISION],
+        final_response="invalid partial workflow",
+        context=service.context(course),
+        assignment_output=AssignmentResult(
+            task_understanding="Task",
+            shared_answer="Must roll back",
+            course_evidence=[],
+            uncertainties=[],
+        ),
+        revision_output=RevisionResult(
+            mode=RevisionMode.CONSERVATIVE,
+            source_version=1,
+            result_version=2,
+            revised_answer="No review",
+            changes=["Invalid"],
+            unresolved_issues=[],
+        ),
+    )
+
+    with pytest.raises(ValueError, match="requires a review"):
+        service.apply_agent_output(course, output, "alice")
+
+    assert repository.latest_answer() is None

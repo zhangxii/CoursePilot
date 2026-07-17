@@ -15,6 +15,7 @@ from coursepilot.database import initialize_database
 from coursepilot.ingestion import MaterialIngestionService, UploadValidator
 from coursepilot.integrations import OpenAIVectorStoreGateway
 from coursepilot.models import (
+    Course,
     CourseContext,
     MainAgentResult,
     MaterialMetadata,
@@ -22,7 +23,12 @@ from coursepilot.models import (
     TeamMember,
 )
 from coursepilot.repositories import CourseRepository, MaterialRepository, WorkspaceRepository
-from coursepilot.retrieval import ArchiveSearchReason, search_course_archive, search_current_course
+from coursepilot.retrieval import (
+    ArchiveSearchReason,
+    CurrentFirstPolicy,
+    search_course_archive,
+    search_current_course,
+)
 from coursepilot.services import CourseService, WorkspaceService
 from coursepilot.ui import WorkspaceView
 
@@ -62,7 +68,7 @@ class ProductionController:
         context = None if active is None else self._workspace.context(active)
         repository = WorkspaceRepository(self._settings.database_path)
         revision = repository.latest_revision()
-        comparison = None if revision is None else repository.compare_revision(revision, [])
+        comparison = None if revision is None else repository.compare_revision(revision)
         return WorkspaceView(
             team=self._workspace.get_team(),
             courses=courses,
@@ -140,16 +146,57 @@ class ProductionController:
             f"唯一大作业：{self._workspace.get_assignment().model_dump_json()}\n"
             f"用户请求：{message}"
         )
-        result = Runner.run_sync(
-            agent,
-            enriched_message,
-            session=self._sessions.session("main_team"),
-        )
-        output = MainAgentResult.model_validate(result.final_output)
+        output = self._run_sdk(agent, enriched_message)
+        if output.intent.value == "revision" and context.latest_review is None:
+            return self._run_review_then_revision(output, message, active)
         self._persist_agent_output(output)
         return output.final_response
 
+    def _run_sdk(self, agent: Agent[None], message: str) -> MainAgentResult:
+        result = Runner.run_sync(agent, message, session=self._sessions.session("main_team"))
+        return MainAgentResult.model_validate(result.final_output)
+
+    def _run_review_then_revision(
+        self, first: MainAgentResult, message: str, active: Course
+    ) -> str:
+        review_output = first.review_output
+        if review_output is None:
+            review_run = self._run_sdk(
+                self._build_agent(self._workspace.context(active)),
+                f"先独立评审当前共享答案，不要修改。原请求：{message}",
+            )
+            review_output = review_run.review_output
+        if review_output is None:
+            raise ValueError("修改前的评审未能生成，请重试")
+        review_only = first.model_copy(
+            update={
+                "review_output": review_output,
+                "revision_output": None,
+                "assignment_output": None,
+                "notes_output": None,
+            }
+        )
+        self._persist_agent_output(review_only)
+        reviewed_context = self._workspace.context(active)
+        revision_run = self._run_sdk(
+            self._build_agent(reviewed_context),
+            f"基于业务上下文中的最新评审修改共享答案。原请求：{message}",
+        )
+        if revision_run.revision_output is None:
+            raise ValueError("评审已保存，但修改稿未能生成，请重试修改")
+        revision_only = revision_run.model_copy(
+            update={
+                "review_output": None,
+                "assignment_output": None,
+                "notes_output": None,
+            }
+        )
+        self._persist_agent_output(revision_only)
+        return f"{review_only.final_response}\n{revision_only.final_response}"
+
     def _build_agent(self, context: CourseContext) -> Agent[None]:
+        retrieval_policy = CurrentFirstPolicy()
+
         @function_tool
         async def search_current(query: str) -> str:
             """Search only the active course and return cited evidence."""
@@ -163,11 +210,13 @@ class ProductionController:
                     gateway=self._vector,
                     max_results=self._settings.max_search_results,
                 )
+            retrieval_policy.record_current_search()
             return result.model_dump_json()
 
         @function_tool
         async def search_archive(query: str, reason: ArchiveSearchReason) -> str:
             """Search archived courses only for an approved reason."""
+            retrieval_policy.authorize_archive(reason)
             with custom_span(
                 "retrieval_filter",
                 {

@@ -134,6 +134,7 @@ class RevisionRecord(Contract):
     result_answer_id: NonEmptyText
     mode: RevisionMode
     change_summary: NonEmptyText
+    unresolved_issues: list[NonEmptyText] = []
 
 
 class AnswerComparison(Contract):

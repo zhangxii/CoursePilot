@@ -34,7 +34,7 @@ def test_initialize_database_is_idempotent_and_creates_required_schema(tmp_path:
         "schema_migrations",
     } <= tables
     assert foreign_keys == 1
-    assert migration_count == 3
+    assert migration_count == 4
 
 
 def test_database_rejects_second_team_and_second_assignment(tmp_path: Path) -> None:

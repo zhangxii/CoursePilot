@@ -5,7 +5,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 INITIAL_SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS teams (
@@ -139,6 +139,10 @@ MIGRATIONS = {
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (course_id) REFERENCES courses(id) ON DELETE CASCADE
         );
+    """,
+    4: """
+        ALTER TABLE revisions ADD COLUMN unresolved_issues_json TEXT NOT NULL DEFAULT '[]'
+            CHECK (json_valid(unresolved_issues_json));
     """,
 }
 
