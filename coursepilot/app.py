@@ -19,7 +19,7 @@ from openai import AsyncOpenAI
 from coursepilot.agents import SqliteAgentRuntime, build_sdk_main_agent
 from coursepilot.config import load_settings
 from coursepilot.database import initialize_database
-from coursepilot.ingestion import MaterialIngestionService, UploadValidator
+from coursepilot.ingestion import MarkdownValidator, MaterialIngestionService
 from coursepilot.models import (
     Course,
     CourseContext,
@@ -49,8 +49,6 @@ class AppController(Protocol):
 
     def upload_material(self, file_name: str, content: bytes) -> None: ...
 
-    def retry_material(self, material_id: str) -> None: ...
-
     def run_agent(self, message: str) -> str: ...
 
 
@@ -70,6 +68,7 @@ class ProductionController:
         set_tracing_disabled(True)
         self._search = LocalMaterialSearchGateway(
             self._materials,
+            material_root=settings.database_path.parent / "materials",
             full_context_chars=settings.full_context_chars,
         )
         self._sessions = SqliteAgentRuntime(settings.database_path.with_name("sessions.db"))
@@ -121,31 +120,33 @@ class ProductionController:
         active = self._courses.get_active()
         if active is None:
             raise ValueError("请先选择当前课程")
-        upload_dir = self._settings.database_path.parent / "uploads"
-        upload_dir.mkdir(parents=True, exist_ok=True)
-        path = upload_dir / Path(file_name).name
+        material_root = self._settings.database_path.parent / "materials"
+        staging_dir = material_root / ".staging"
+        staging_dir.mkdir(parents=True, exist_ok=True)
+        path = staging_dir / Path(file_name).name
         path.write_bytes(content)
-        validator = UploadValidator(max_upload_bytes=self._settings.max_upload_mb * 1024 * 1024)
-        material_type = validator.validate(path)
-        metadata = MaterialMetadata(
-            course_id=active.id,
-            course_name=active.name,
-            course_date=active.course_date,
-            teacher=active.teacher,
-            topic=active.topic,
-            material_type=material_type,
-            status=MaterialStatus.CURRENT,
-        )
-        ingestion = MaterialIngestionService(
-            repository=self._materials,
-            validator=validator,
-        )
-        asyncio.run(ingestion.ingest(path, metadata))
-
-    def retry_material(self, material_id: str) -> None:
-        material = self._materials.get(material_id)
-        source = self._settings.database_path.parent / "uploads" / material.file_name
-        self.upload_material(material.file_name, source.read_bytes())
+        try:
+            validator = MarkdownValidator(
+                max_upload_bytes=self._settings.max_upload_mb * 1024 * 1024
+            )
+            material_type = validator.validate(path)
+            metadata = MaterialMetadata(
+                course_id=active.id,
+                course_name=active.name,
+                course_date=active.course_date,
+                teacher=active.teacher,
+                topic=active.topic,
+                material_type=material_type,
+                status=MaterialStatus.CURRENT,
+            )
+            ingestion = MaterialIngestionService(
+                repository=self._materials,
+                validator=validator,
+                material_root=material_root,
+            )
+            asyncio.run(ingestion.ingest(path, metadata))
+        finally:
+            path.unlink(missing_ok=True)
 
     def run_agent(self, message: str) -> str:
         active = self._courses.get_active()
@@ -299,16 +300,12 @@ def render(view: WorkspaceView, controller: AppController) -> None:
 
     materials, conversation, workspace = st.tabs(["课程资料", "Agent 对话", "唯一大作业"])
     with materials:
-        upload = st.file_uploader("上传 PDF/PPTX", type=["pdf", "pptx"])
-        if upload is not None and st.button("解析并保存"):
-            with st.status("正在解析并保存到本地资料库"):
+        upload = st.file_uploader("上传 Markdown/纯文本", type=["md", "txt"])
+        if upload is not None and st.button("保存到资料库"):
+            with st.status("正在保存 Markdown 资料"):
                 controller.upload_material(upload.name, upload.getvalue())
         for material in view.materials:
             st.write(material.file_name, material.index_status.value)
-            if material.index_status.value == "failed" and st.button(
-                "重试", key=f"retry-{material.id}"
-            ):
-                controller.retry_material(material.id)
     with conversation:
         message = st.chat_input("总结、完成、评审或修改")
         if message:

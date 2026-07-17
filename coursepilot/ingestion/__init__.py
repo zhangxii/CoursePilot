@@ -1,29 +1,19 @@
-"""Course material validation, parsing, and preparation."""
+"""Course material validation and Markdown-file storage."""
 
 from coursepilot.ingestion.documents import (
-    EmptyExtraction,
+    EmptyMarkdown,
     FileTooLarge,
-    MarkdownRenderer,
-    MaterialParser,
-    PageContent,
-    PdfParser,
-    PptxParser,
+    MarkdownValidator,
     UnsupportedFileType,
-    UploadValidator,
     calculate_file_hash,
 )
 from coursepilot.ingestion.sync import MaterialIngestionService
 
 __all__ = [
-    "EmptyExtraction",
+    "EmptyMarkdown",
     "FileTooLarge",
-    "MarkdownRenderer",
-    "MaterialParser",
+    "MarkdownValidator",
     "MaterialIngestionService",
-    "PageContent",
-    "PdfParser",
-    "PptxParser",
     "UnsupportedFileType",
-    "UploadValidator",
     "calculate_file_hash",
 ]

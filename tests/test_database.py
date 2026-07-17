@@ -37,8 +37,9 @@ def test_initialize_database_is_idempotent_and_creates_required_schema(tmp_path:
         "schema_migrations",
     } <= tables
     assert foreign_keys == 1
-    assert migration_count == 5
-    assert "content_markdown" in material_columns
+    assert migration_count == 6
+    assert "storage_path" in material_columns
+    assert "content_markdown" not in material_columns
     assert "remote_file_id" not in material_columns
 
 
@@ -69,6 +70,46 @@ def test_database_rejects_second_team_and_second_assignment(tmp_path: Path) -> N
                 VALUES ('other_assignment', 'main_team', '其他作业', '不应创建')
                 """
             )
+
+
+def test_v6_migration_exports_legacy_markdown_before_removing_database_body(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "coursepilot.db"
+    with sqlite3.connect(database) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY);
+            INSERT INTO schema_migrations(version) VALUES (1), (2), (3), (4), (5);
+            CREATE TABLE courses (id TEXT PRIMARY KEY);
+            INSERT INTO courses(id) VALUES ('course-1');
+            CREATE TABLE materials (
+                id TEXT PRIMARY KEY, course_id TEXT NOT NULL, file_name TEXT NOT NULL,
+                file_hash TEXT NOT NULL, material_type TEXT NOT NULL, status TEXT NOT NULL,
+                index_status TEXT NOT NULL, content_markdown TEXT NOT NULL DEFAULT '',
+                error TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+            );
+            INSERT INTO materials VALUES (
+                'material-1', 'course-1', 'lesson.pdf', 'hash', 'pdf', 'current',
+                'indexed', '# Legacy lesson', NULL, '2026-07-17', '2026-07-17'
+            );
+            """
+        )
+
+    initialize_database(database)
+
+    with sqlite3.connect(database) as connection:
+        row = connection.execute(
+            "SELECT material_type, index_status, storage_path FROM materials"
+        ).fetchone()
+        columns = {
+            item[1] for item in connection.execute("PRAGMA table_info(materials)").fetchall()
+        }
+    assert row == ("markdown", "indexed", "material-1/content.md")
+    assert "content_markdown" not in columns
+    assert (tmp_path / "materials" / "material-1" / "content.md").read_text(
+        encoding="utf-8"
+    ) == "# Legacy lesson"
 
 
 def test_answer_versions_are_unique_for_the_single_assignment(tmp_path: Path) -> None:

@@ -1,7 +1,9 @@
 """Local full-context and keyword retrieval adapter."""
 
 import re
+from pathlib import Path
 
+from coursepilot.material_store import MaterialFileStore
 from coursepilot.models import LocalMaterialDocument, MaterialSearchAttributes
 from coursepilot.repositories import MaterialRepository
 from coursepilot.retrieval.search import (
@@ -18,11 +20,13 @@ class LocalMaterialSearchGateway:
         self,
         repository: MaterialRepository,
         *,
+        material_root: Path,
         full_context_chars: int = 60_000,
     ) -> None:
         if full_context_chars <= 0:
             raise ValueError("full_context_chars must be positive")
         self._repository = repository
+        self._store = MaterialFileStore(material_root)
         self._full_context_chars = full_context_chars
 
     async def search(
@@ -33,15 +37,16 @@ class LocalMaterialSearchGateway:
             for document in self._repository.list_indexed_documents()
             if _matches(document.material.course_id, document.material.status.value, filters)
         ]
-        total_chars = sum(len(document.material.content_markdown) for document in documents)
+        contents = [
+            (document, self._store.read(document.material.storage_path)) for document in documents
+        ]
+        total_chars = sum(len(markdown) for _, markdown in contents)
         if total_chars <= self._full_context_chars:
-            return [
-                _hit(document, document.material.content_markdown, 1.0) for document in documents
-            ]
+            return [_hit(document, markdown, 1.0) for document, markdown in contents]
 
         ranked = []
-        for document in documents:
-            for section in _sections(document.material.content_markdown):
+        for document, markdown in contents:
+            for section in _sections(markdown):
                 score = _score(query, section)
                 if score > 0:
                     ranked.append((_hit(document, section, float(score)), score))

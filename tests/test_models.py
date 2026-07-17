@@ -22,7 +22,7 @@ from coursepilot.models import (
 def source() -> SourceRef:
     return SourceRef(
         material_id="material-1",
-        file_name="architecture.pdf",
+        file_name="architecture.md",
         course_id="course-1",
         page_or_section="第 12 页",
         excerpt="模块应当具有清晰边界。",
@@ -36,7 +36,7 @@ def test_core_domain_models_accept_the_single_team_assignment_context() -> None:
         course_date=date(2026, 7, 17),
         teacher="刘飞",
         topic="模块边界",
-        material_type=MaterialType.PDF,
+        material_type=MaterialType.MARKDOWN,
         status=MaterialStatus.CURRENT,
     )
     team = Team(
@@ -50,7 +50,7 @@ def test_core_domain_models_accept_the_single_team_assignment_context() -> None:
         current_answer="初稿",
     )
 
-    assert material.material_type is MaterialType.PDF
+    assert material.material_type is MaterialType.MARKDOWN
     assert team.id == "main_team"
     assert assignment.id == "main_assignment"
     assert assignment.team_id == team.id

@@ -23,7 +23,7 @@ from coursepilot.services import WorkspaceService
 def review() -> ReviewResult:
     source = SourceRef(
         material_id="m1",
-        file_name="rubric.pdf",
+        file_name="rubric.md",
         course_id="architecture",
         page_or_section="page 2",
         excerpt="Explain tradeoffs",

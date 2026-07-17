@@ -80,7 +80,7 @@ class MaterialRepository:
             rows = connection.execute(
                 """
                 SELECT m.id, m.course_id, m.file_name, m.file_hash, m.material_type,
-                       m.status, m.index_status, m.content_markdown, m.error,
+                       m.status, m.index_status, m.storage_path, m.error,
                        c.name, c.course_date, c.teacher, c.topic
                 FROM materials AS m
                 JOIN courses AS c ON c.id = m.course_id
@@ -102,13 +102,13 @@ class MaterialRepository:
     def mark_pending(self, material_id: str) -> MaterialRecord:
         return self._update_status(material_id, IndexStatus.PENDING, error=None)
 
-    def mark_indexed(self, material_id: str, content_markdown: str) -> MaterialRecord:
-        if not content_markdown.strip():
-            raise ValueError("indexed material content must not be blank")
+    def mark_indexed(self, material_id: str, storage_path: str) -> MaterialRecord:
+        if not storage_path.strip():
+            raise ValueError("indexed material storage path must not be blank")
         return self._update_status(
             material_id,
             IndexStatus.INDEXED,
-            content_markdown=content_markdown,
+            storage_path=storage_path,
             error=None,
         )
 
@@ -116,7 +116,7 @@ class MaterialRepository:
         return self._update_status(
             material_id,
             IndexStatus.FAILED,
-            content_markdown="",
+            storage_path="",
             error=error,
         )
 
@@ -125,18 +125,18 @@ class MaterialRepository:
         material_id: str,
         status: IndexStatus,
         *,
-        content_markdown: str = "",
+        storage_path: str = "",
         error: str | None,
     ) -> MaterialRecord:
         with connect_database(self._database_path) as connection:
             cursor = connection.execute(
                 """
                 UPDATE materials
-                SET index_status = ?, content_markdown = ?, error = ?,
+                SET index_status = ?, storage_path = ?, error = ?,
                     updated_at = CURRENT_TIMESTAMP
                 WHERE id = ?
                 """,
-                (status.value, content_markdown, error, material_id),
+                (status.value, storage_path, error, material_id),
             )
             if cursor.rowcount != 1:
                 raise KeyError(material_id)
@@ -145,7 +145,7 @@ class MaterialRepository:
 
 _SELECT_MATERIAL = """
     SELECT id, course_id, file_name, file_hash, material_type, status,
-           index_status, content_markdown, error
+           index_status, storage_path, error
     FROM materials
 """
 
@@ -161,6 +161,6 @@ def _to_model(
         material_type=MaterialType(row[4]),
         status=MaterialStatus(row[5]),
         index_status=IndexStatus(row[6]),
-        content_markdown=row[7],
+        storage_path=row[7],
         error=row[8],
     )

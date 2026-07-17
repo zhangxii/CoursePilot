@@ -5,7 +5,9 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-SCHEMA_VERSION = 5
+from coursepilot.material_store import MaterialFileStore
+
+SCHEMA_VERSION = 6
 
 INITIAL_SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS teams (
@@ -50,12 +52,13 @@ CREATE TABLE IF NOT EXISTS materials (
     file_name TEXT NOT NULL CHECK (length(trim(file_name)) > 0),
     file_hash TEXT NOT NULL,
     material_type TEXT NOT NULL CHECK (
-        material_type IN ('pdf', 'pptx')
+        material_type IN ('markdown', 'text')
     ),
     status TEXT NOT NULL CHECK (status IN ('current', 'archived')),
     index_status TEXT NOT NULL DEFAULT 'pending' CHECK (
         index_status IN ('pending', 'indexed', 'failed')
     ),
+    storage_path TEXT NOT NULL DEFAULT '',
     error TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -175,6 +178,41 @@ MIGRATIONS = {
         DROP TABLE materials_legacy;
         CREATE INDEX idx_materials_course_status ON materials(course_id, status);
     """,
+    6: """
+        DROP INDEX IF EXISTS idx_materials_course_status;
+        ALTER TABLE materials RENAME TO materials_legacy_v5;
+        CREATE TABLE materials (
+            id TEXT PRIMARY KEY,
+            course_id TEXT NOT NULL,
+            file_name TEXT NOT NULL CHECK (length(trim(file_name)) > 0),
+            file_hash TEXT NOT NULL,
+            material_type TEXT NOT NULL CHECK (material_type IN ('markdown', 'text')),
+            status TEXT NOT NULL CHECK (status IN ('current', 'archived')),
+            index_status TEXT NOT NULL DEFAULT 'pending' CHECK (
+                index_status IN ('pending', 'indexed', 'failed')
+            ),
+            storage_path TEXT NOT NULL DEFAULT '',
+            error TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (course_id) REFERENCES courses(id) ON DELETE CASCADE,
+            UNIQUE (course_id, file_hash)
+        );
+        INSERT INTO materials (
+            id, course_id, file_name, file_hash, material_type, status,
+            index_status, storage_path, error, created_at, updated_at
+        )
+        SELECT id, course_id, file_name, file_hash, 'markdown', status,
+               CASE WHEN index_status = 'failed' THEN 'failed'
+                    WHEN length(trim(content_markdown)) > 0 THEN 'indexed'
+                    ELSE 'pending' END,
+               CASE WHEN length(trim(content_markdown)) > 0
+                    THEN id || '/content.md' ELSE '' END,
+               error, created_at, updated_at
+        FROM materials_legacy_v5;
+        DROP TABLE materials_legacy_v5;
+        CREATE INDEX idx_materials_course_status ON materials(course_id, status);
+    """,
 }
 
 
@@ -212,7 +250,21 @@ def initialize_database(path: str | Path) -> Path:
         for version in range(1, SCHEMA_VERSION + 1):
             if version in applied_versions:
                 continue
+            if version == 6:
+                _export_legacy_markdown(connection, database_path)
             connection.executescript(MIGRATIONS[version])
             connection.execute("INSERT INTO schema_migrations (version) VALUES (?)", (version,))
 
     return database_path.resolve()
+
+
+def _export_legacy_markdown(connection: sqlite3.Connection, database_path: Path) -> None:
+    columns = {row[1] for row in connection.execute("PRAGMA table_info(materials)").fetchall()}
+    if "content_markdown" not in columns:
+        return
+    store = MaterialFileStore(database_path.parent / "materials")
+    rows = connection.execute(
+        "SELECT id, content_markdown FROM materials WHERE length(trim(content_markdown)) > 0"
+    ).fetchall()
+    for material_id, content in rows:
+        store.write(material_id, content)

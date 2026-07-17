@@ -17,8 +17,8 @@ class Contract(BaseModel):
 
 
 class MaterialType(StrEnum):
-    PDF = "pdf"
-    PPTX = "pptx"
+    MARKDOWN = "markdown"
+    TEXT = "text"
 
 
 class MaterialStatus(StrEnum):
@@ -85,7 +85,7 @@ class MaterialRecord(Contract):
     material_type: MaterialType
     status: MaterialStatus
     index_status: IndexStatus
-    content_markdown: str = ""
+    storage_path: str = ""
     error: str | None = None
 
 

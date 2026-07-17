@@ -46,9 +46,9 @@ def _review() -> ReviewResult:
 
     source = SourceRef(
         material_id="m1",
-        file_name="lesson.pdf",
+        file_name="lesson.md",
         course_id="architecture",
-        page_or_section="PDF page 1",
+        page_or_section="Page 1",
         excerpt="Evidence",
     )
     return ReviewResult(

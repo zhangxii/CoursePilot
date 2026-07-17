@@ -66,10 +66,10 @@ def hit(course_id: str, status: str = "current") -> MaterialSearchHit:
             course_date="2026-07-17",
             teacher="Teacher",
             topic="Architecture",
-            material_type=MaterialType.PDF,
+            material_type=MaterialType.MARKDOWN,
             status=MaterialStatus(status),
         ),
-        text="## PDF 第 12 页\n\n模块应当具有清晰边界。",
+        text="## 第 12 页\n\n模块应当具有清晰边界。",
     )
 
 
@@ -86,7 +86,7 @@ def test_current_course_search_forces_active_course_filter_and_returns_sources()
     assert result.scope is SearchScope.CURRENT
     assert result.items[0].source.course_id == "architecture-20260717"
     assert len(result.items) == 1
-    assert result.items[0].source.page_or_section == "PDF 第 12 页"
+    assert result.items[0].source.page_or_section == "第 12 页"
     assert gateway.calls == [
         (
             "模块边界",

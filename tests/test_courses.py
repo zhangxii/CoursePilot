@@ -38,10 +38,10 @@ def test_course_service_creates_lists_and_switches_the_single_active_course(
             course_date=first.course_date,
             teacher=first.teacher,
             topic=first.topic,
-            material_type=MaterialType.PDF,
+            material_type=MaterialType.MARKDOWN,
             status=MaterialStatus.CURRENT,
         ),
-        file_name="requirements.pdf",
+        file_name="requirements.md",
         file_hash="requirements-hash",
     )
     second_material = materials.reserve(
@@ -51,10 +51,10 @@ def test_course_service_creates_lists_and_switches_the_single_active_course(
             course_date=second.course_date,
             teacher=second.teacher,
             topic=second.topic,
-            material_type=MaterialType.PDF,
+            material_type=MaterialType.MARKDOWN,
             status=MaterialStatus.CURRENT,
         ),
-        file_name="architecture.pdf",
+        file_name="architecture.md",
         file_hash="architecture-hash",
     )
 

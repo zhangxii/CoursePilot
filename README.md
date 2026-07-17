@@ -2,7 +2,7 @@
 
 CoursePilot 是面向一个学生小组、一份持续迭代大作业的课程学习 Agent 系统。它支持：
 
-- 导入 PDF、PPTX 课程资料并保存在本地资料库；
+- 上传预先整理好的 Markdown 或 UTF-8 纯文本课程资料；
 - 在多门课程之间切换，同时保持“当前课程优先”的检索边界；
 - 通过 Notes、Assignment、Review、Revision 四个专业 Agent 完成总结、作业、评审和修改；
 - 保存小组、唯一大作业、共享答案版本、评审和修改记录；
@@ -71,7 +71,7 @@ COURSEPILOT_MAX_RETRIES=2
 | `COURSEPILOT_LLM_BASE_URL` | 否 | 第三方服务的 OpenAI-compatible `/v1` 地址；OpenAI 官方服务留空 |
 | `COURSEPILOT_MODEL_NAME` | 否 | Agent 使用的模型，默认 `gpt-5-mini` |
 | `COURSEPILOT_DATABASE_PATH` | 否 | 业务数据库路径，默认 `data/coursepilot.db` |
-| `COURSEPILOT_MAX_UPLOAD_MB` | 否 | PDF/PPTX 上传大小上限 |
+| `COURSEPILOT_MAX_UPLOAD_MB` | 否 | Markdown/纯文本上传大小上限 |
 | `COURSEPILOT_MAX_SEARCH_RESULTS` | 否 | 单次检索最大结果数 |
 | `COURSEPILOT_FULL_CONTEXT_CHARS` | 否 | 全部资料直接送入模型的字符预算，默认 `60000` |
 
@@ -105,7 +105,7 @@ coursepilot init-db
 
 该命令会创建或升级业务数据库。重复执行是安全的。
 
-从旧的 Vector Store 版本升级时，旧记录没有可迁移的本地正文，因此会被标记为 `pending`。原文件仍在 `data/uploads/` 时，请在页面中重新导入一次；新版本会解析并保存本地正文，此后不再依赖远端索引。
+从上一版本升级时，SQLite 中已有的 Markdown 正文会自动导出到 `data/materials/`。只有没有本地正文的旧远端记录会标记为 `pending`；这类资料需先自行转换为 UTF-8 `.md` 或 `.txt` 后重新上传。
 
 会话数据库会在首次对话时自动创建在业务数据库同目录，默认路径为：
 
@@ -181,17 +181,17 @@ architecture-design-20260717
 进入“课程资料”页签：
 
 1. 确认左侧栏显示正确的当前课程；
-2. 选择 PDF 或 PPTX；
-3. 点击“解析并保存”；
+2. 选择已经整理好的 UTF-8 `.md` 或 `.txt`；
+3. 点击“保存到资料库”；
 4. 等待状态变为 `indexed`。
 
 上传文件的本地副本默认保存在：
 
 ```text
-data/uploads/
+data/materials/<material_id>/content.md
 ```
 
-处理失败时页面会显示 `failed`，可以点击“重试”。同一课程下重复上传相同内容会按文件哈希去重。当前检索范围内的资料总量不超过 `FULL_CONTEXT_CHARS` 时，系统会把全部正文交给模型；超过预算后，才按关键词选取最相关章节。
+保存失败时页面会显示 `failed`，请重新上传同一文件；若记录存在但 Markdown 文件丢失，重新上传会自动修复。同一课程下重复上传相同内容会按文件哈希去重。当前检索范围内的资料总量不超过 `FULL_CONTEXT_CHARS` 时，系统会把全部正文交给模型；超过预算后，才按关键词选取最相关章节。
 
 ### 6.4 使用 Agent
 
@@ -258,7 +258,7 @@ python scripts/benchmark.py
 data/
 ├── coursepilot.db   # 业务数据
 ├── sessions.db      # Agents SDK 多轮会话
-└── uploads/         # 上传文件的本地副本
+└── materials/       # 课程资料，全部统一保存为 Markdown
 ```
 
 需要全新开始时，请先停止 Streamlit，再备份并删除上述本地数据。不要删除仍需保留的作业版本。
@@ -286,8 +286,7 @@ coursepilot check-config
 
 依次检查：
 
-- 上传文件是否为有效 PDF/PPTX，且未超过大小限制。
-- PDF 是否包含可提取文字（当前版本不支持扫描件 OCR）；
+- 上传文件是否为 UTF-8 `.md` 或 `.txt`，且未超过大小限制；
 - `data/` 目录是否可写；
 - 资料是否显示为 `indexed`，以及查询是否属于当前课程。
 
@@ -306,6 +305,6 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/check.ps1
 ## 10. 当前限制
 
 - 只支持一个小组和一份大作业；
-- 只支持 PDF、PPTX，不包含 OCR；
+- 只接受预先处理好的 Markdown 和 UTF-8 纯文本，不解析 PDF/PPTX，也不包含 OCR；
 - 默认使用本地 SQLite，不适合多人同时写入的生产部署；
 - 首版不包含账号登录、权限系统和在线作业提交。

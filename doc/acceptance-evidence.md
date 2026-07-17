@@ -2,7 +2,7 @@
 
 | 系统验收标准 | 自动化证据 | 结论 |
 |---|---|---|
-| PDF/PPTX 导入、本地正文保存、页码与当前课程检索 | `test_ingestion.py`、`test_local_material_library.py`、`test_retrieval.py` | 通过 |
+| Markdown/纯文本导入、文件化正文保存与当前课程检索 | `test_ingestion.py`、`test_local_material_library.py`、`test_retrieval.py` | 通过 |
 | 当前/历史冲突隔离 | `test_retrieval.py::test_merge_keeps_current_course_first_and_marks_cross_course_conflict` | 通过 |
 | 四类请求路由及结构化输出 | `test_agents.py`、`test_specialists.py`、`test_models.py` | 通过 |
 | 可解释评审 | `test_models.py`、`test_workspace.py` | 通过 |
