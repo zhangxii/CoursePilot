@@ -103,6 +103,18 @@ CREATE TABLE IF NOT EXISTS revisions (
     FOREIGN KEY (operated_by_member_id) REFERENCES team_members(id) ON DELETE RESTRICT
 );
 
+CREATE TRIGGER IF NOT EXISTS validate_revision_version
+BEFORE INSERT ON revisions
+FOR EACH ROW
+WHEN (
+    SELECT version FROM answers WHERE id = NEW.result_answer_id
+) != (
+    SELECT version + 1 FROM answers WHERE id = NEW.source_answer_id
+)
+BEGIN
+    SELECT RAISE(ABORT, 'result answer must be next answer version');
+END;
+
 CREATE INDEX IF NOT EXISTS idx_materials_course_status
     ON materials(course_id, status);
 CREATE INDEX IF NOT EXISTS idx_answers_assignment_version

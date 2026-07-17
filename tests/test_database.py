@@ -145,6 +145,64 @@ def test_revision_requires_an_operator_and_review_of_its_source_answer(tmp_path:
                 """
             )
 
+
+def test_revision_result_must_be_the_next_answer_version(tmp_path: Path) -> None:
+    database = tmp_path / "coursepilot.db"
+    initialize_database(database)
+
+    with connect_database(database) as connection:
+        connection.execute("INSERT INTO teams (id, name) VALUES ('main_team', 'CoursePilot')")
+        connection.execute(
+            "INSERT INTO team_members (id, team_id, name) "
+            "VALUES ('member-1', 'main_team', '张同学')"
+        )
+        connection.execute(
+            """
+            INSERT INTO assignment (id, team_id, title, requirements)
+            VALUES ('main_assignment', 'main_team', '大作业', '完成系统设计')
+            """
+        )
+        for answer_id, version in (("answer-1", 1), ("answer-2", 2), ("answer-3", 3)):
+            connection.execute(
+                """
+                INSERT INTO answers (
+                    id, assignment_id, version, content, operated_by_member_id
+                ) VALUES (?, 'main_assignment', ?, '答案', 'member-1')
+                """,
+                (answer_id, version),
+            )
+        connection.execute(
+            """
+            INSERT INTO reviews (id, answer_id, result_json, total_score)
+            VALUES ('review-1', 'answer-1', '{}', 80)
+            """
+        )
+
+        with pytest.raises(sqlite3.IntegrityError, match="next answer version"):
+            connection.execute(
+                """
+                INSERT INTO revisions (
+                    id, source_answer_id, review_id, result_answer_id, mode,
+                    change_summary, operated_by_member_id
+                ) VALUES (
+                    'revision-skip-version', 'answer-1', 'review-1', 'answer-3',
+                    'conservative', '跨级修改', 'member-1'
+                )
+                """
+            )
+
+        connection.execute(
+            """
+            INSERT INTO revisions (
+                id, source_answer_id, review_id, result_answer_id, mode,
+                change_summary, operated_by_member_id
+            ) VALUES (
+                'revision-valid', 'answer-1', 'review-1', 'answer-2',
+                'conservative', '正常修改', 'member-1'
+            )
+            """
+        )
+
         with pytest.raises(sqlite3.IntegrityError):
             connection.execute(
                 """
