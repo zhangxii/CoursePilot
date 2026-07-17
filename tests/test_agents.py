@@ -7,8 +7,10 @@ from coursepilot.agents import (
     AgentRequest,
     CourseRequiredError,
     MainAgent,
+    RuleBasedIntentClassifier,
     SpecialistResult,
     SqliteAgentRuntime,
+    build_sdk_main_agent,
 )
 from coursepilot.models import AgentKind, CourseContext, ReviewResult
 from coursepilot.observability import TraceCollector
@@ -20,6 +22,13 @@ class Specialists:
 
     async def run(self, kind: AgentKind, request: AgentRequest) -> SpecialistResult:
         self.calls.append(kind)
+        if kind is AgentKind.REVIEW:
+            return SpecialistResult(kind=kind, message=f"{kind.value} completed", review=_review())
+        if kind is AgentKind.REVISION:
+            assert request.context.latest_review is not None
+            return SpecialistResult(
+                kind=kind, message=f"{kind.value} completed", revised_answer="revised draft"
+            )
         return SpecialistResult(kind=kind, message=f"{kind.value} completed")
 
 
@@ -76,7 +85,9 @@ def test_main_agent_routes_four_tasks_and_keeps_control(
     message: str, expected: list[AgentKind]
 ) -> None:
     specialists = Specialists()
-    result = asyncio.run(MainAgent(specialists).run(message, context()))
+    result = asyncio.run(
+        MainAgent(specialists, RuleBasedIntentClassifier()).run(message, context())
+    )
 
     assert result.invoked_agents == expected
     assert specialists.calls == expected
@@ -86,7 +97,7 @@ def test_main_agent_routes_four_tasks_and_keeps_control(
 def test_main_agent_does_not_guess_missing_course() -> None:
     specialists = Specialists()
     with pytest.raises(CourseRequiredError):
-        asyncio.run(MainAgent(specialists).run("总结课程", None))
+        asyncio.run(MainAgent(specialists, RuleBasedIntentClassifier()).run("总结课程", None))
 
     assert specialists.calls == []
 
@@ -95,7 +106,9 @@ def test_main_agent_trace_records_ordered_specialist_sequence() -> None:
     specialists = Specialists()
     trace = TraceCollector()
 
-    asyncio.run(MainAgent(specialists, trace).run("修改当前答案", context()))
+    asyncio.run(
+        MainAgent(specialists, RuleBasedIntentClassifier(), trace).run("修改当前答案", context())
+    )
 
     assert [record.attributes["agent"] for record in trace.records] == ["review", "revision"]
 
@@ -108,3 +121,20 @@ def test_sqlite_agent_runtime_restores_messages_after_restart(tmp_path: Path) ->
     restored = SqliteAgentRuntime(database).session("group-chat")
 
     assert asyncio.run(restored.get_items())[0]["content"] == "remember this"
+
+
+def test_sdk_runtime_connects_runner_to_persistent_session(tmp_path: Path) -> None:
+    class FakeRunner:
+        @staticmethod
+        async def run(agent, message, *, session):
+            await session.add_items([{"role": "user", "content": message}])
+            return "done"
+
+    runtime = SqliteAgentRuntime(tmp_path / "sessions.db")
+
+    result = asyncio.run(
+        runtime.run(build_sdk_main_agent("gpt-5-mini"), "hello", "group", runner=FakeRunner)
+    )
+
+    assert result == "done"
+    assert asyncio.run(runtime.session("group").get_items())[0]["content"] == "hello"

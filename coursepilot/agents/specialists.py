@@ -5,6 +5,7 @@ from typing import Any, Protocol
 from pydantic import BaseModel, ValidationError
 
 from coursepilot.models import (
+    Assignment,
     AssignmentResult,
     CourseContext,
     NotesResult,
@@ -75,7 +76,7 @@ class AssignmentAgent:
         self._generator = generator
 
     async def run(
-        self, query: str, context: CourseContext, assignment: dict[str, Any]
+        self, query: str, context: CourseContext, assignment: Assignment
     ) -> AssignmentResult:
         current = await self._retrieval.current(query, context)
         return await _validated(
@@ -83,7 +84,7 @@ class AssignmentAgent:
             AssignmentResult,
             "assignment",
             {
-                "assignment": assignment,
+                "assignment": assignment.model_dump(mode="json"),
                 "current_answer": context.current_answer,
                 "current_evidence": current.model_dump(mode="json"),
                 "self_check_required": True,
@@ -96,16 +97,14 @@ class ReviewAgent:
         self._retrieval = retrieval
         self._generator = generator
 
-    async def run(
-        self, query: str, context: CourseContext, assignment: dict[str, Any]
-    ) -> ReviewResult:
+    async def run(self, query: str, context: CourseContext, assignment: Assignment) -> ReviewResult:
         current = await self._retrieval.current(query, context)
         return await _validated(
             self._generator,
             ReviewResult,
             "review",
             {
-                "assignment": assignment,
+                "assignment": assignment.model_dump(mode="json"),
                 "answer": context.current_answer,
                 "current_evidence": current.model_dump(mode="json"),
             },

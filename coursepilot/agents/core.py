@@ -1,9 +1,9 @@
 """Testable main-agent orchestration with specialist agents kept as tools."""
 
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
-from agents import Agent, SQLiteSession
+from agents import Agent, Runner, SQLiteSession
 from pydantic import BaseModel, ConfigDict
 
 from coursepilot.models import (
@@ -38,6 +38,19 @@ class SpecialistResult(BaseModel):
 
     kind: AgentKind
     message: str
+    review: ReviewResult | None = None
+    revised_answer: str | None = None
+
+
+class IntentClassifier(Protocol):
+    async def classify(self, message: str, context: CourseContext) -> AgentKind: ...
+
+
+class RuleBasedIntentClassifier:
+    """Deterministic offline/test fallback; production uses the SDK main agent."""
+
+    async def classify(self, message: str, context: CourseContext) -> AgentKind:
+        return _classify_fallback(message)
 
 
 class SpecialistGateway(Protocol):
@@ -45,15 +58,21 @@ class SpecialistGateway(Protocol):
 
 
 class MainAgent:
-    def __init__(self, specialists: SpecialistGateway, trace: TraceCollector | None = None) -> None:
+    def __init__(
+        self,
+        specialists: SpecialistGateway,
+        classifier: IntentClassifier,
+        trace: TraceCollector | None = None,
+    ) -> None:
         self._specialists = specialists
+        self._classifier = classifier
         self._trace = trace
 
     async def run(self, message: str, context: CourseContext | None) -> MainAgentResult:
         if context is None:
             raise CourseRequiredError("请先选择当前课程")
         trace_context = TraceContext.create("agent-run", context.active_course_id)
-        intent = _classify(message)
+        intent = await self._classifier.classify(message, context)
         sequence = [intent]
         if intent is AgentKind.REVISION and context.latest_review is None:
             sequence = [AgentKind.REVIEW, AgentKind.REVISION]
@@ -68,6 +87,15 @@ class MainAgent:
                 ):
                     output = await self._specialists.run(kind, request)
             outputs.append(output)
+            if output.review is not None:
+                context = context.model_copy(update={"latest_review": output.review})
+            if output.revised_answer is not None:
+                context = context.model_copy(
+                    update={
+                        "current_answer": output.revised_answer,
+                        "answer_version": context.answer_version + 1,
+                    }
+                )
         return MainAgentResult(
             intent=intent,
             invoked_agents=sequence,
@@ -76,7 +104,7 @@ class MainAgent:
         )
 
 
-def _classify(message: str) -> AgentKind:
+def _classify_fallback(message: str) -> AgentKind:
     normalized = message.strip().lower()
     rules = (
         (AgentKind.REVISION, ("修改", "优化", "revision", "revise")),
@@ -96,6 +124,16 @@ class SqliteAgentRuntime:
 
     def session(self, session_id: str) -> SQLiteSession:
         return SQLiteSession(session_id, self._database_path)
+
+    async def run(
+        self,
+        agent: Agent[Any],
+        message: str,
+        session_id: str,
+        *,
+        runner: Any = Runner,
+    ) -> Any:
+        return await runner.run(agent, message, session=self.session(session_id))
 
 
 def build_sdk_main_agent(model: str) -> Agent[None]:
