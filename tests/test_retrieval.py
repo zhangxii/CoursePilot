@@ -1,0 +1,114 @@
+import asyncio
+
+import pytest
+
+from coursepilot.models import CourseContext
+from coursepilot.retrieval import (
+    ArchiveSearchReason,
+    ComparisonFilter,
+    CompoundFilter,
+    InvalidArchiveSearchReason,
+    MemoryTraceRecorder,
+    RemoteSearchHit,
+    SearchScope,
+    search_course_archive,
+    search_current_course,
+)
+
+
+class FakeSearchGateway:
+    def __init__(self, hits: list[RemoteSearchHit]) -> None:
+        self.hits = hits
+        self.calls: list[tuple[str, ComparisonFilter | CompoundFilter, int]] = []
+
+    async def search(
+        self,
+        query: str,
+        filters: ComparisonFilter | CompoundFilter,
+        max_results: int,
+    ) -> list[RemoteSearchHit]:
+        self.calls.append((query, filters, max_results))
+        return self.hits
+
+
+def context() -> CourseContext:
+    return CourseContext(
+        active_course_id="architecture-20260717",
+        active_course_name="架构设计",
+    )
+
+
+def hit(course_id: str, status: str = "current") -> RemoteSearchHit:
+    return RemoteSearchHit(
+        file_id="file-1",
+        filename="architecture.md",
+        score=0.91,
+        attributes={"course_id": course_id, "status": status},
+        text="## PDF 第 12 页\n\n模块应当具有清晰边界。",
+    )
+
+
+def test_current_course_search_forces_active_course_filter_and_returns_sources() -> None:
+    gateway = FakeSearchGateway(
+        [hit("architecture-20260717"), hit("requirements-20260701", "archived")]
+    )
+    trace = MemoryTraceRecorder()
+
+    result = asyncio.run(
+        search_current_course("模块边界", context(), gateway=gateway, max_results=5, trace=trace)
+    )
+
+    assert result.scope is SearchScope.CURRENT
+    assert result.items[0].source.course_id == "architecture-20260717"
+    assert len(result.items) == 1
+    assert result.items[0].source.page_or_section == "PDF 第 12 页"
+    assert gateway.calls == [
+        (
+            "模块边界",
+            ComparisonFilter(type="eq", key="course_id", value="architecture-20260717"),
+            5,
+        )
+    ]
+    assert trace.events[0].attributes["active_course_id"] == "architecture-20260717"
+
+
+def test_archive_search_excludes_active_course_and_records_reason() -> None:
+    gateway = FakeSearchGateway(
+        [hit("requirements-20260701", "archived"), hit("architecture-20260717")]
+    )
+    trace = MemoryTraceRecorder()
+
+    result = asyncio.run(
+        search_course_archive(
+            "前序需求",
+            ArchiveSearchReason.PREREQUISITE_REFERENCED,
+            context(),
+            gateway=gateway,
+            max_results=3,
+            trace=trace,
+        )
+    )
+
+    assert result.scope is SearchScope.ARCHIVE
+    assert result.reason is ArchiveSearchReason.PREREQUISITE_REFERENCED
+    assert [item.source.course_id for item in result.items] == ["requirements-20260701"]
+    assert gateway.calls[0][1] == ComparisonFilter(
+        type="ne", key="course_id", value="architecture-20260717"
+    )
+    assert trace.events[0].attributes["reason"] == "prerequisite_referenced"
+
+
+def test_archive_search_rejects_missing_or_unrecognised_reason() -> None:
+    gateway = FakeSearchGateway([])
+
+    with pytest.raises(InvalidArchiveSearchReason):
+        asyncio.run(
+            search_course_archive(
+                "history",
+                "because I want it",  # type: ignore[arg-type]
+                context(),
+                gateway=gateway,
+            )
+        )
+
+    assert gateway.calls == []

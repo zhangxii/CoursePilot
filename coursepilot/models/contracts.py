@@ -29,6 +29,22 @@ class MaterialStatus(StrEnum):
     ARCHIVED = "archived"
 
 
+class IndexStatus(StrEnum):
+    PENDING = "pending"
+    UPLOADED = "uploaded"
+    INDEXED = "indexed"
+    FAILED = "failed"
+
+
+class Course(Contract):
+    id: NonEmptyText
+    name: NonEmptyText
+    course_date: date
+    teacher: NonEmptyText
+    topic: NonEmptyText
+    is_active: bool = False
+
+
 class RevisionMode(StrEnum):
     CONSERVATIVE = "conservative"
     DEEP_RESTRUCTURE = "deep_restructure"
@@ -49,6 +65,18 @@ class MaterialMetadata(Contract):
     topic: NonEmptyText
     material_type: MaterialType
     status: MaterialStatus
+
+
+class MaterialRecord(Contract):
+    id: NonEmptyText
+    course_id: NonEmptyText
+    file_name: NonEmptyText
+    file_hash: NonEmptyText
+    material_type: MaterialType
+    status: MaterialStatus
+    index_status: IndexStatus
+    remote_file_id: str | None = None
+    error: str | None = None
 
 
 class TeamMember(Contract):

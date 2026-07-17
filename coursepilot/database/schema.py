@@ -5,9 +5,9 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
-SCHEMA_SQL = """
+INITIAL_SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS teams (
     id TEXT PRIMARY KEY CHECK (id = 'main_team'),
     name TEXT NOT NULL CHECK (length(trim(name)) > 0),
@@ -125,6 +125,14 @@ CREATE INDEX IF NOT EXISTS idx_revisions_source
     ON revisions(source_answer_id);
 """
 
+MIGRATIONS = {
+    1: INITIAL_SCHEMA_SQL,
+    2: """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_courses_single_current
+            ON courses(status) WHERE status = 'current';
+    """,
+}
+
 
 @contextmanager
 def connect_database(path: str | Path) -> Iterator[sqlite3.Connection]:
@@ -154,13 +162,13 @@ def initialize_database(path: str | Path) -> Path:
             )
             """
         )
-        applied = connection.execute(
-            "SELECT 1 FROM schema_migrations WHERE version = ?", (SCHEMA_VERSION,)
-        ).fetchone()
-        if applied is None:
-            connection.executescript(SCHEMA_SQL)
-            connection.execute(
-                "INSERT INTO schema_migrations (version) VALUES (?)", (SCHEMA_VERSION,)
-            )
+        applied_versions = {
+            row[0] for row in connection.execute("SELECT version FROM schema_migrations")
+        }
+        for version in range(1, SCHEMA_VERSION + 1):
+            if version in applied_versions:
+                continue
+            connection.executescript(MIGRATIONS[version])
+            connection.execute("INSERT INTO schema_migrations (version) VALUES (?)", (version,))
 
     return database_path.resolve()
