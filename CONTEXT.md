@@ -36,6 +36,14 @@ _Avoid_: Formal answer, saved chat response
 The only operation that publishes a reviewed candidate as the next formal answer version. Adoption is atomic and never overwrites history.
 _Avoid_: Save, automatic publish
 
+**Conversation**:
+An isolated message history for one assignment question, bound to an explicit formal answer version. A new conversation has no messages from other conversations.
+_Avoid_: Assignment, global chat, formal answer
+
+**Conversation Branch**:
+A new conversation whose initial message snapshot ends at one explicit message in its parent. Messages added after the fork never flow between parent and child.
+_Avoid_: Shared chat, answer-version branch
+
 **Review**:
 An independent evaluation of a specific answer version.
 _Avoid_: Revision, score for an assignment question without a target version

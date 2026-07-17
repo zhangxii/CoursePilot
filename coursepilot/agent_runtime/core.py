@@ -5,6 +5,7 @@ import re
 import threading
 from pathlib import Path
 from typing import Any, Protocol
+from uuid import uuid4
 
 from agents import Agent, Runner
 from agents.memory.session_settings import SessionSettings
@@ -143,7 +144,18 @@ class JsonlSession:
 
     async def add_items(self, items: list[Any]) -> None:
         with self._lock:
-            self._write([*self._read(), *items])
+            identified = []
+            for item in items:
+                validated = self._item_adapter.validate_python(item)
+                identified.append(
+                    validated if "id" in validated else {**validated, "id": str(uuid4())}
+                )
+            self._write([*self._read(), *identified])
+
+    async def set_items(self, items: list[Any]) -> None:
+        """Replace a session with an explicit snapshot, used only when branching."""
+        with self._lock:
+            self._write(items)
 
     async def pop_item(self) -> Any | None:
         with self._lock:

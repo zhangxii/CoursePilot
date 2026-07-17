@@ -494,7 +494,13 @@ class WorkspaceRepository:
         with self._lock:
             selected = self._active_assignment_id()
             documents: dict[str, str | bytes] = {}
-            latest = self.latest_answer(selected)
+            base = (
+                None
+                if output.context.base_answer_version_id is None
+                else self.get_answer(output.context.base_answer_version_id)
+            )
+            if base is not None and base.assignment_id != selected:
+                raise ValueError("agent output base version does not match active assignment")
             if output.notes_output is not None:
                 note_id = str(uuid4())
                 documents[f"courses/{course_id}/notes/{note_id}.yaml"] = dump_yaml(
@@ -504,9 +510,7 @@ class WorkspaceRepository:
             change_summary = ""
             unresolved_issues: list[str] = []
             if output.revision_output is not None:
-                persisted_review = (
-                    None if latest is None else self.latest_review(latest.id, selected)
-                )
+                persisted_review = None if base is None else self.latest_review(base.id, selected)
                 if output.review_output is None and persisted_review is None:
                     raise ValueError("revision requires a review for the current answer")
                 candidate_content = output.revision_output.revised_answer
@@ -520,8 +524,8 @@ class WorkspaceRepository:
                 candidate = CandidateDraft(
                     id=candidate_id,
                     assignment_id=selected,
-                    conversation_id=f"legacy-{selected}",
-                    base_answer_version_id=None if latest is None else latest.id,
+                    conversation_id=output.context.conversation_id,
+                    base_answer_version_id=None if base is None else base.id,
                     content=candidate_content,
                     status=CandidateStatus.DRAFT,
                     revision_mode=(
@@ -533,18 +537,18 @@ class WorkspaceRepository:
                 documents[self._candidate_path(selected, candidate.id)] = self._candidate_document(
                     candidate
                 )
-                if output.review_output is not None and latest is not None:
+                if output.review_output is not None and base is not None:
                     formal_review = ReviewRecord(
-                        id=str(uuid4()), answer_id=latest.id, result=output.review_output
+                        id=str(uuid4()), answer_id=base.id, result=output.review_output
                     )
                     documents[f"assignments/{selected}/reviews/{formal_review.id}.yaml"] = (
                         dump_yaml(formal_review.model_dump(mode="json"))
                     )
             elif output.review_output is not None:
-                if latest is None:
+                if base is None:
                     raise ValueError("review requires a formal answer")
                 formal_review = ReviewRecord(
-                    id=str(uuid4()), answer_id=latest.id, result=output.review_output
+                    id=str(uuid4()), answer_id=base.id, result=output.review_output
                 )
                 documents[f"assignments/{selected}/reviews/{formal_review.id}.yaml"] = dump_yaml(
                     formal_review.model_dump(mode="json")

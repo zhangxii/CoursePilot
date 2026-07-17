@@ -121,6 +121,7 @@ def test_jsonl_agent_runtime_restores_messages_after_restart(tmp_path: Path) -> 
     restored = FileAgentRuntime(tmp_path).session("group-chat")
 
     assert asyncio.run(restored.get_items())[0]["content"] == "remember this"
+    assert asyncio.run(restored.get_items())[0]["id"]
 
     assert asyncio.run(restored.pop_item())["content"] == "remember this"
     asyncio.run(restored.add_items([{"role": "user", "content": "new"}]))

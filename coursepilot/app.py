@@ -20,6 +20,7 @@ from coursepilot.agent_runtime import FileAgentRuntime, build_sdk_main_agent
 from coursepilot.config import load_settings
 from coursepilot.ingestion import MarkdownValidator, MaterialIngestionService
 from coursepilot.models import (
+    Conversation,
     Course,
     CourseContext,
     MainAgentResult,
@@ -27,7 +28,12 @@ from coursepilot.models import (
     MaterialStatus,
     TeamMember,
 )
-from coursepilot.repositories import CourseRepository, MaterialRepository, WorkspaceRepository
+from coursepilot.repositories import (
+    ConversationRepository,
+    CourseRepository,
+    MaterialRepository,
+    WorkspaceRepository,
+)
 from coursepilot.retrieval import (
     ArchiveSearchReason,
     CurrentFirstPolicy,
@@ -35,7 +41,7 @@ from coursepilot.retrieval import (
     search_course_archive,
     search_current_course,
 )
-from coursepilot.services import CourseService, WorkspaceService
+from coursepilot.services import ConversationService, CourseService, WorkspaceService
 from coursepilot.ui import WorkspaceView
 
 
@@ -53,6 +59,22 @@ class AppController(Protocol):
     def upload_material(self, file_name: str, content: bytes) -> None: ...
 
     def run_agent(self, message: str) -> str: ...
+
+    def list_conversations(self) -> list[Conversation]: ...
+
+    def create_conversation(
+        self, title: str, *, blank: bool = False, answer_version_id: str | None = None
+    ) -> Conversation: ...
+
+    def activate_conversation(self, conversation_id: str) -> Conversation: ...
+
+    def rename_conversation(self, conversation_id: str, title: str) -> Conversation: ...
+
+    def archive_conversation(self, conversation_id: str) -> Conversation: ...
+
+    def branch_conversation(
+        self, parent_conversation_id: str, message_id: str, title: str
+    ) -> Conversation: ...
 
 
 class ProductionController:
@@ -72,15 +94,19 @@ class ProductionController:
             self._materials,
             full_context_chars=settings.full_context_chars,
         )
-        self._sessions = FileAgentRuntime(settings.data_path)
+        runtime = FileAgentRuntime(settings.data_path)
+        self._conversations = ConversationService(
+            ConversationRepository(settings.data_path), self._workspace, runtime
+        )
 
     def view(self) -> WorkspaceView:
         courses = self._courses.list()
         active = self._courses.get_active()
         assignments = self._workspace.list_assignments()
         assignment = self._workspace.get_assignment()
+        conversation = self._conversations.ensure_active()
         materials = [] if active is None else self._materials.list_for_course(active.id)
-        context = None if active is None else self._workspace.context(active)
+        context = None if active is None else self._workspace.context(active, conversation)
         repository = WorkspaceRepository(self._settings.data_path)
         revision = repository.latest_revision()
         comparison = None if revision is None else repository.compare_revision(revision)
@@ -101,18 +127,21 @@ class ProductionController:
     ) -> None:
         self._workspace.initialize_team(team_name, [TeamMember(id="member-1", name=member_name)])
         self._workspace.initialize_assignment(title, requirements)
+        self._conversations.create("作业协作")
 
     def create_assignment(self, assignment_id: str, title: str, requirements: str) -> None:
         self._workspace.create_assignment(assignment_id, title, requirements)
+        self._conversations.create("作业协作")
 
     def activate_assignment(self, assignment_id: str) -> None:
         self._workspace.activate_assignment(assignment_id)
+        self._conversations.ensure_active()
 
     def activate_course(self, course_id: str) -> None:
         active = self._courses.get_active()
         if active is None:
             raise ValueError("请先初始化课程")
-        context = self._workspace.context(active)
+        context = self._workspace.context(active, self._conversations.ensure_active())
         CourseService(self._courses).activate(course_id, context)
 
     def create_course(
@@ -156,11 +185,38 @@ class ProductionController:
         finally:
             path.unlink(missing_ok=True)
 
+    def list_conversations(self) -> list[Conversation]:
+        return self._conversations.list()
+
+    def create_conversation(
+        self, title: str, *, blank: bool = False, answer_version_id: str | None = None
+    ) -> Conversation:
+        if blank:
+            return self._conversations.create_blank(title)
+        if answer_version_id is not None:
+            return self._conversations.create_from_version(title, answer_version_id)
+        return self._conversations.create(title)
+
+    def activate_conversation(self, conversation_id: str) -> Conversation:
+        return self._conversations.activate(conversation_id)
+
+    def rename_conversation(self, conversation_id: str, title: str) -> Conversation:
+        return self._conversations.rename(conversation_id, title)
+
+    def archive_conversation(self, conversation_id: str) -> Conversation:
+        return self._conversations.archive(conversation_id)
+
+    def branch_conversation(
+        self, parent_conversation_id: str, message_id: str, title: str
+    ) -> Conversation:
+        return asyncio.run(self._conversations.branch(parent_conversation_id, message_id, title))
+
     def run_agent(self, message: str) -> str:
         active = self._courses.get_active()
         if active is None:
             raise ValueError("请先选择当前课程")
-        context = self._workspace.context(active)
+        conversation = self._conversations.ensure_active()
+        context = self._workspace.context(active, conversation)
         agent = self._build_agent(context)
         enriched_message = (
             f"业务上下文：{context.model_dump_json()}\n"
@@ -174,11 +230,10 @@ class ProductionController:
         return output.final_response
 
     def _run_sdk(self, agent: Agent[None], message: str) -> MainAgentResult:
-        assignment_id = self._workspace.get_assignment().id
         result = Runner.run_sync(
             agent,
             message,
-            session=self._sessions.session(f"main_team_{assignment_id}"),
+            session=self._conversations.session(self._conversations.active().id),
         )
         return MainAgentResult.model_validate(result.final_output)
 
@@ -188,7 +243,7 @@ class ProductionController:
         review_output = first.review_output
         if review_output is None:
             review_run = self._run_sdk(
-                self._build_agent(self._workspace.context(active)),
+                self._build_agent(self._workspace.context(active, self._conversations.active())),
                 f"先独立评审当前共享答案，不要修改。原请求：{message}",
             )
             review_output = review_run.review_output
@@ -203,7 +258,7 @@ class ProductionController:
             }
         )
         self._persist_agent_output(review_only)
-        reviewed_context = self._workspace.context(active)
+        reviewed_context = self._workspace.context(active, self._conversations.active())
         revision_run = self._run_sdk(
             self._build_agent(reviewed_context),
             f"基于业务上下文中的最新评审修改共享答案。原请求：{message}",
@@ -282,7 +337,7 @@ class ProductionController:
         active = self._courses.get_active()
         if active is None:
             raise ValueError("请先选择当前课程")
-        self._workspace.apply_agent_output(active, output, "member-1")
+        self._workspace.apply_agent_output(active, output, "member-1", self._conversations.active())
 
 
 def render(view: WorkspaceView, controller: AppController) -> None:

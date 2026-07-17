@@ -86,7 +86,7 @@
 
 ### 4.5 上下文与业务记录
 
-- **FR-030 对话上下文**：每条对话应维护 `conversation_id`、`active_course_id`、`team_id`、`active_assignment_id`、`base_answer_version_id` 和可选 `parent_conversation_id`；题目、正式版本、评审等业务事实始终从业务记录读取。当前课程、当前题目、当前对话是三个独立选择轴。
+- **FR-030 对话上下文**：持久化的 `Conversation` 应维护 `conversation_id`、`team_id`、`active_assignment_id`、`base_answer_version_id` 和可选 `parent_conversation_id`；运行时 `ConversationContext` 再从独立的当前课程选择轴加入 `active_course_id`。题目、正式版本、评审等业务事实始终从业务记录读取；切换课程不得改写对话绑定的题目或基础版本。当前课程、当前题目、当前对话是三个独立选择轴。
 - **FR-031 对话持久化**：每条对话使用独立 JSONL Session，重启后能够恢复；系统应支持新建空白对话、基于正式版本新建对话、从现有对话创建分支、切换、重命名和归档。新对话默认继承当前正式版本，但不继承其他对话消息；分支必须记录父对话和精确的消息分支点，并复制截至该点的消息快照。
 - **FR-032 业务持久化**：课程资料、作业和答案正文保存为 Markdown；工作区、课程、评审和修改保存为 YAML；不使用数据库，也不以聊天历史代替业务记录。
 - **FR-033 正式答案版本**：每道题可拥有多个正式答案版本；采用候选稿或上传用户新稿时创建新版本，保留基础版本、来源、审查、优化模式、操作成员和说明的关联。历史正式版本不可被覆盖。

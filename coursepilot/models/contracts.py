@@ -72,6 +72,11 @@ class CandidateStatus(StrEnum):
     SUPERSEDED = "superseded"
 
 
+class ConversationStatus(StrEnum):
+    ACTIVE = "active"
+    ARCHIVED = "archived"
+
+
 class AgentKind(StrEnum):
     NOTES = "notes"
     ASSIGNMENT = "assignment"
@@ -141,6 +146,23 @@ class Assignment(Contract):
     title: NonEmptyText
     requirements: NonEmptyText
     rubric: str | None = None
+
+
+class Conversation(Contract):
+    id: NonEmptyText
+    assignment_id: NonEmptyText
+    team_id: Literal["main_team"] = "main_team"
+    title: NonEmptyText
+    base_answer_version_id: str | None = None
+    parent_conversation_id: str | None = None
+    forked_from_message_id: str | None = None
+    status: ConversationStatus = ConversationStatus.ACTIVE
+
+    @model_validator(mode="after")
+    def validate_branch_links(self) -> "Conversation":
+        if (self.parent_conversation_id is None) != (self.forked_from_message_id is None):
+            raise ValueError("conversation branch requires both parent and message point")
+        return self
 
 
 class AnswerRecord(Contract):
@@ -323,14 +345,19 @@ class ReviewResult(Contract):
         return self
 
 
-class CourseContext(Contract):
+class ConversationContext(Contract):
+    conversation_id: NonEmptyText = "legacy-conversation"
     active_course_id: NonEmptyText
     active_course_name: NonEmptyText
     team_id: Literal["main_team"] = "main_team"
     active_assignment_id: NonEmptyText
+    base_answer_version_id: str | None = None
     current_answer: str | None = None
     latest_review: ReviewResult | None = None
     answer_version: PositiveVersion = 1
+
+
+CourseContext = ConversationContext
 
 
 class RevisionResult(Contract):
@@ -352,7 +379,7 @@ class MainAgentResult(Contract):
     intent: AgentKind
     invoked_agents: list[AgentKind]
     final_response: NonEmptyText
-    context: CourseContext
+    context: ConversationContext
     notes_output: NotesResult | None = None
     assignment_output: AssignmentResult | None = None
     review_output: ReviewResult | None = None

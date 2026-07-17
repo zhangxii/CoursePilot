@@ -4,6 +4,7 @@ from coursepilot.models import (
     AnswerComparison,
     AnswerRecord,
     Assignment,
+    Conversation,
     Course,
     CourseContext,
     MainAgentResult,
@@ -74,14 +75,28 @@ class WorkspaceService:
     def save_review(self, answer_id: str, result: ReviewResult) -> ReviewRecord:
         return self._repository.add_review(answer_id, result)
 
-    def context(self, course: Course) -> CourseContext:
+    def context(self, course: Course, conversation: Conversation | None = None) -> CourseContext:
         assignment = self.get_assignment()
-        answer = self._repository.latest_answer()
+        answer = (
+            self._repository.latest_answer()
+            if conversation is None
+            else (
+                None
+                if conversation.base_answer_version_id is None
+                else self._repository.get_answer(conversation.base_answer_version_id)
+            )
+        )
+        if conversation is not None and conversation.assignment_id != assignment.id:
+            raise ValueError("conversation does not belong to the active assignment")
         review = None if answer is None else self._repository.latest_review(answer.id)
         return CourseContext(
+            conversation_id=(
+                f"legacy-{assignment.id}" if conversation is None else conversation.id
+            ),
             active_course_id=course.id,
             active_course_name=course.name,
             active_assignment_id=assignment.id,
+            base_answer_version_id=None if answer is None else answer.id,
             current_answer=None if answer is None else answer.content,
             latest_review=None if review is None else review.result,
             answer_version=1 if answer is None else answer.version,
@@ -91,10 +106,19 @@ class WorkspaceService:
         return self._repository.compare_revision(revision)
 
     def apply_agent_output(
-        self, course: Course, output: MainAgentResult, member_id: str
+        self,
+        course: Course,
+        output: MainAgentResult,
+        member_id: str,
+        conversation: Conversation | None = None,
     ) -> CourseContext:
         active_assignment_id = self.get_assignment().id
         if output.context.active_assignment_id != active_assignment_id:
             raise ValueError("agent output assignment does not match the active assignment")
+        if conversation is not None:
+            if output.context.conversation_id != conversation.id:
+                raise ValueError("agent output conversation does not match the active conversation")
+            if output.context.base_answer_version_id != conversation.base_answer_version_id:
+                raise ValueError("agent output base version does not match the conversation")
         self._repository.apply_agent_output(course.id, output, member_id)
-        return self.context(course)
+        return self.context(course, conversation)
