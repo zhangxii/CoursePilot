@@ -1,5 +1,6 @@
 """File-backed persistence for one team and multiple assignment aggregates."""
 
+import hashlib
 import re
 import threading
 from pathlib import Path
@@ -11,7 +12,15 @@ from coursepilot.file_store import FileDataStore, dump_yaml, parse_front_matter,
 from coursepilot.models import (
     AnswerComparison,
     AnswerRecord,
+    AnswerSource,
     Assignment,
+    AssignmentUploadPurpose,
+    AttachmentPurpose,
+    AttachmentRecord,
+    AutomaticReviewRecord,
+    CandidateDraft,
+    CandidateStatus,
+    ImportedAssignment,
     MainAgentResult,
     NotesResult,
     ReviewRecord,
@@ -119,17 +128,6 @@ class WorkspaceRepository:
             )
         return self.get_assignment(assignment_id)
 
-    def add_answer(
-        self, content: str, member_id: str, assignment_id: str | None = None
-    ) -> AnswerRecord:
-        with self._lock:
-            selected = assignment_id or self._active_assignment_id()
-            latest = self.latest_answer(selected)
-            version = 1 if latest is None else latest.version + 1
-            answer, document = self._new_answer(content, member_id, version, selected)
-            self._store.write_text(self._answer_path(selected, version), document)
-            return answer
-
     def get_answer(self, answer_id: str) -> AnswerRecord:
         for path in self._store.glob("assignments/*/answers/*.md"):
             metadata, body = parse_front_matter(path.read_text(encoding="utf-8"))
@@ -140,6 +138,13 @@ class WorkspaceRepository:
                     version=metadata["version"],
                     content=body.strip(),
                     operated_by_member_id=metadata["operated_by_member_id"],
+                    source=metadata.get("source", AnswerSource.LEGACY),
+                    based_on_version_id=metadata.get("based_on_version_id"),
+                    source_attachment_id=metadata.get("source_attachment_id"),
+                    adopted_candidate_id=metadata.get("adopted_candidate_id"),
+                    automatic_review_id=metadata.get("automatic_review_id"),
+                    revision_mode=metadata.get("revision_mode"),
+                    version_note=metadata.get("version_note"),
                 )
         raise KeyError(answer_id)
 
@@ -150,6 +155,272 @@ class WorkspaceRepository:
             return None
         metadata, _ = parse_front_matter(paths[-1].read_text(encoding="utf-8"))
         return self.get_answer(str(metadata["id"]))
+
+    def list_answers(self, assignment_id: str | None = None) -> list[AnswerRecord]:
+        selected = assignment_id or self._active_assignment_id()
+        answers = []
+        for path in self._store.glob(f"assignments/{selected}/answers/*.md"):
+            metadata, _ = parse_front_matter(path.read_text(encoding="utf-8"))
+            answers.append(self.get_answer(str(metadata["id"])))
+        return answers
+
+    def import_assignment_artifact(
+        self,
+        *,
+        file_name: str,
+        safe_name: str,
+        original: bytes,
+        normalized: str,
+        purpose: AssignmentUploadPurpose,
+        member_id: str,
+        version_note: str,
+    ) -> ImportedAssignment:
+        with self._lock:
+            selected = self._active_assignment_id()
+            current = self.latest_answer(selected)
+            if purpose is AssignmentUploadPurpose.INITIAL_VERSION and current is not None:
+                raise ValueError("initial version requires an assignment without a formal answer")
+            if purpose is AssignmentUploadPurpose.NEW_FORMAL_VERSION and current is None:
+                raise ValueError("new formal version requires an existing formal answer")
+            if (
+                purpose is not AssignmentUploadPurpose.REFERENCE_ATTACHMENT
+                and not version_note.strip()
+            ):
+                raise ValueError("formal assignment upload requires a version note")
+
+            attachment_id = str(uuid4())
+            base = f"assignments/{selected}/attachments/{attachment_id}"
+            attachment = AttachmentRecord(
+                id=attachment_id,
+                assignment_id=selected,
+                purpose=(
+                    AttachmentPurpose.ASSIGNMENT_REFERENCE
+                    if purpose is AssignmentUploadPurpose.REFERENCE_ATTACHMENT
+                    else AttachmentPurpose.ASSIGNMENT_VERSION
+                ),
+                original_file_name=file_name,
+                original_path=f"{base}/original/{safe_name}",
+                normalized_path=f"{base}/normalized.md",
+                normalized_content=normalized,
+                content_hash=hashlib.sha256(original).hexdigest(),
+            )
+            documents: dict[str, str | bytes] = {
+                attachment.original_path: original,
+                attachment.normalized_path: normalized,
+                f"{base}/attachment.yaml": dump_yaml(
+                    attachment.model_dump(mode="json", exclude={"normalized_content"})
+                ),
+            }
+            answer = None
+            if purpose is not AssignmentUploadPurpose.REFERENCE_ATTACHMENT:
+                version = 1 if current is None else current.version + 1
+                answer, answer_document = self._new_answer(
+                    normalized,
+                    member_id,
+                    version,
+                    selected,
+                    source=AnswerSource.USER_UPLOAD,
+                    based_on_version_id=None if current is None else current.id,
+                    source_attachment_id=attachment.id,
+                    version_note=version_note,
+                )
+                documents[self._answer_path(selected, version)] = answer_document
+            self._store.write_batch(documents)
+            return ImportedAssignment(attachment=attachment, answer_version=answer)
+
+    def list_attachments(self, assignment_id: str | None = None) -> list[AttachmentRecord]:
+        selected = assignment_id or self._active_assignment_id()
+        records = []
+        for path in self._store.glob(f"assignments/{selected}/attachments/*/attachment.yaml"):
+            data = self._store.read_yaml(path.relative_to(self._store.root))
+            normalized = self._store.read_text(data["normalized_path"])
+            records.append(
+                AttachmentRecord.model_validate({**data, "normalized_content": normalized})
+            )
+        return sorted(records, key=lambda item: item.original_file_name)
+
+    def create_candidate(
+        self,
+        content: str,
+        conversation_id: str,
+        assignment_id: str | None = None,
+        *,
+        base_answer_version_id: str | None = None,
+        derived_from_candidate_id: str | None = None,
+        change_summary: str = "",
+        resolved_issues: list[str] | None = None,
+        unresolved_issues: list[str] | None = None,
+        revision_mode: RevisionMode | None = None,
+    ) -> CandidateDraft:
+        with self._lock:
+            selected = assignment_id or self._active_assignment_id()
+            if base_answer_version_id is None and derived_from_candidate_id is None:
+                current = self.latest_answer(selected)
+                base_answer_version_id = None if current is None else current.id
+            candidate = CandidateDraft(
+                id=str(uuid4()),
+                assignment_id=selected,
+                conversation_id=conversation_id,
+                base_answer_version_id=base_answer_version_id,
+                derived_from_candidate_id=derived_from_candidate_id,
+                content=content,
+                change_summary=change_summary,
+                resolved_issues=resolved_issues or [],
+                unresolved_issues=unresolved_issues or [],
+                revision_mode=revision_mode,
+            )
+            self._store.write_text(
+                self._candidate_path(selected, candidate.id),
+                self._candidate_document(candidate),
+            )
+            return candidate
+
+    def get_candidate(self, candidate_id: str) -> CandidateDraft:
+        matches = self._store.glob(f"assignments/*/candidates/{candidate_id}.md")
+        if not matches:
+            raise KeyError(candidate_id)
+        metadata, body = parse_front_matter(matches[0].read_text(encoding="utf-8"))
+        return CandidateDraft.model_validate({**metadata, "content": body.strip()})
+
+    def list_candidates(self, assignment_id: str | None = None) -> list[CandidateDraft]:
+        selected = assignment_id or self._active_assignment_id()
+        candidates = []
+        for path in self._store.glob(f"assignments/{selected}/candidates/*.md"):
+            metadata, _ = parse_front_matter(path.read_text(encoding="utf-8"))
+            candidates.append(self.get_candidate(str(metadata["id"])))
+        return candidates
+
+    def complete_candidate_review(self, candidate_id: str, result: ReviewResult) -> CandidateDraft:
+        with self._lock:
+            candidate = self.get_candidate(candidate_id)
+            if candidate.status is not CandidateStatus.DRAFT:
+                raise ValueError("only a draft candidate can become ready")
+            review = AutomaticReviewRecord(
+                id=str(uuid4()), candidate_id=candidate.id, result=result
+            )
+            ready = CandidateDraft.model_validate(
+                {
+                    **candidate.model_dump(mode="json"),
+                    "status": CandidateStatus.READY_FOR_ADOPTION,
+                    "automatic_review_id": review.id,
+                }
+            )
+            self._store.write_batch(
+                {
+                    self._candidate_path(ready.assignment_id, ready.id): (
+                        self._candidate_document(ready)
+                    ),
+                    self._candidate_review_path(ready.assignment_id, review.id): dump_yaml(
+                        review.model_dump(mode="json")
+                    ),
+                }
+            )
+            return ready
+
+    def get_candidate_review(self, review_id: str) -> AutomaticReviewRecord:
+        matches = self._store.glob(f"assignments/*/candidate-reviews/{review_id}.yaml")
+        if not matches:
+            raise KeyError(review_id)
+        return AutomaticReviewRecord.model_validate(
+            self._store.read_yaml(matches[0].relative_to(self._store.root))
+        )
+
+    def discard_candidate(self, candidate_id: str) -> CandidateDraft:
+        with self._lock:
+            candidate = self.get_candidate(candidate_id)
+            if candidate.status not in {
+                CandidateStatus.DRAFT,
+                CandidateStatus.READY_FOR_ADOPTION,
+            }:
+                raise ValueError("only an active candidate can be discarded")
+            discarded = CandidateDraft.model_validate(
+                {
+                    **candidate.model_dump(mode="json"),
+                    "status": CandidateStatus.DISCARDED,
+                    "automatic_review_id": None,
+                }
+            )
+            self._store.write_text(
+                self._candidate_path(discarded.assignment_id, discarded.id),
+                self._candidate_document(discarded),
+            )
+            return discarded
+
+    def continue_candidate(self, candidate_id: str, content: str) -> CandidateDraft:
+        with self._lock:
+            source = self.get_candidate(candidate_id)
+            if source.status not in {
+                CandidateStatus.DRAFT,
+                CandidateStatus.READY_FOR_ADOPTION,
+            }:
+                raise ValueError("only an active candidate can be continued")
+            child = CandidateDraft(
+                id=str(uuid4()),
+                assignment_id=source.assignment_id,
+                conversation_id=source.conversation_id,
+                base_answer_version_id=source.base_answer_version_id,
+                derived_from_candidate_id=source.id,
+                content=content,
+            )
+            superseded = CandidateDraft.model_validate(
+                {
+                    **source.model_dump(mode="json"),
+                    "status": CandidateStatus.SUPERSEDED,
+                    "superseded_by_candidate_id": child.id,
+                    "automatic_review_id": None,
+                }
+            )
+            self._store.write_batch(
+                {
+                    self._candidate_path(source.assignment_id, source.id): (
+                        self._candidate_document(superseded)
+                    ),
+                    self._candidate_path(child.assignment_id, child.id): (
+                        self._candidate_document(child)
+                    ),
+                }
+            )
+            return child
+
+    def adopt_candidate(self, candidate_id: str, member_id: str) -> AnswerRecord:
+        with self._lock:
+            candidate = self.get_candidate(candidate_id)
+            if candidate.status is not CandidateStatus.READY_FOR_ADOPTION:
+                raise ValueError("candidate is not ready for adoption")
+            if candidate.automatic_review_id is None:
+                raise ValueError("candidate requires an automatic review")
+            review = self.get_candidate_review(candidate.automatic_review_id)
+            if review.candidate_id != candidate.id:
+                raise ValueError("automatic review does not belong to candidate")
+            current = self.latest_answer(candidate.assignment_id)
+            current_id = None if current is None else current.id
+            if current_id != candidate.base_answer_version_id:
+                raise ValueError("candidate base version is stale")
+            version = 1 if current is None else current.version + 1
+            answer, answer_document = self._new_answer(
+                candidate.content,
+                member_id,
+                version,
+                candidate.assignment_id,
+                source=AnswerSource.ADOPTED_CANDIDATE,
+                based_on_version_id=candidate.base_answer_version_id,
+                adopted_candidate_id=candidate.id,
+                automatic_review_id=candidate.automatic_review_id,
+                revision_mode=candidate.revision_mode,
+                version_note="Adopted reviewed candidate",
+            )
+            adopted = CandidateDraft.model_validate(
+                {**candidate.model_dump(mode="json"), "status": CandidateStatus.ADOPTED}
+            )
+            self._store.write_batch(
+                {
+                    self._answer_path(candidate.assignment_id, version): answer_document,
+                    self._candidate_path(candidate.assignment_id, candidate.id): (
+                        self._candidate_document(adopted)
+                    ),
+                }
+            )
+            return answer
 
     def add_review(self, answer_id: str, result: ReviewResult) -> ReviewRecord:
         answer = self.get_answer(answer_id)
@@ -172,49 +443,6 @@ class WorkspaceRepository:
             if review.answer_id == answer_id:
                 matches.append((path.stat().st_mtime_ns, review))
         return None if not matches else max(matches, key=lambda item: item[0])[1]
-
-    def revise(
-        self,
-        source: AnswerRecord,
-        review: ReviewRecord,
-        content: str,
-        member_id: str,
-        mode: RevisionMode,
-        summary: str,
-        unresolved_issues: list[str] | None = None,
-    ) -> tuple[AnswerRecord, RevisionRecord]:
-        with self._lock:
-            current = self.latest_answer(source.assignment_id)
-            if current is None or current.id != source.id:
-                raise ValueError("revision source must be the latest answer")
-            if review.answer_id != source.id:
-                raise ValueError("revision requires a review of its source answer")
-            persisted_review = self.latest_review(source.id)
-            if persisted_review is None or persisted_review.id != review.id:
-                raise ValueError("revision review is not persisted for its source answer")
-            if not summary.strip():
-                raise ValueError("revision summary must not be blank")
-            answer, answer_document = self._new_answer(
-                content, member_id, source.version + 1, source.assignment_id
-            )
-            revision = RevisionRecord(
-                id=str(uuid4()),
-                source_answer_id=source.id,
-                review_id=review.id,
-                result_answer_id=answer.id,
-                mode=mode,
-                change_summary=summary,
-                unresolved_issues=unresolved_issues or [],
-            )
-            self._store.write_batch(
-                {
-                    self._answer_path(source.assignment_id, answer.version): answer_document,
-                    (
-                        f"assignments/{source.assignment_id}/revisions/{answer.version:04d}.yaml"
-                    ): dump_yaml(revision.model_dump(mode="json")),
-                }
-            )
-            return answer, revision
 
     def latest_revision(self, assignment_id: str | None = None) -> RevisionRecord | None:
         selected = assignment_id or self._active_assignment_id()
@@ -265,52 +493,61 @@ class WorkspaceRepository:
     ) -> None:
         with self._lock:
             selected = self._active_assignment_id()
-            documents: dict[str, str] = {}
+            documents: dict[str, str | bytes] = {}
             latest = self.latest_answer(selected)
             if output.notes_output is not None:
                 note_id = str(uuid4())
                 documents[f"courses/{course_id}/notes/{note_id}.yaml"] = dump_yaml(
                     output.notes_output.model_dump(mode="json")
                 )
-            if output.assignment_output is not None:
-                version = 1 if latest is None else latest.version + 1
-                latest, answer_document = self._new_answer(
-                    output.assignment_output.shared_answer, member_id, version, selected
+            candidate_content = None
+            change_summary = ""
+            unresolved_issues: list[str] = []
+            if output.revision_output is not None:
+                persisted_review = (
+                    None if latest is None else self.latest_review(latest.id, selected)
                 )
-                documents[self._answer_path(selected, version)] = answer_document
-            review: ReviewRecord | None
-            if output.review_output is not None:
+                if output.review_output is None and persisted_review is None:
+                    raise ValueError("revision requires a review for the current answer")
+                candidate_content = output.revision_output.revised_answer
+                change_summary = "；".join(output.revision_output.changes)
+                unresolved_issues = output.revision_output.unresolved_issues
+            elif output.assignment_output is not None:
+                candidate_content = output.assignment_output.shared_answer
+
+            if candidate_content is not None:
+                candidate_id = str(uuid4())
+                candidate = CandidateDraft(
+                    id=candidate_id,
+                    assignment_id=selected,
+                    conversation_id=f"legacy-{selected}",
+                    base_answer_version_id=None if latest is None else latest.id,
+                    content=candidate_content,
+                    status=CandidateStatus.DRAFT,
+                    revision_mode=(
+                        None if output.revision_output is None else output.revision_output.mode
+                    ),
+                    change_summary=change_summary,
+                    unresolved_issues=unresolved_issues,
+                )
+                documents[self._candidate_path(selected, candidate.id)] = self._candidate_document(
+                    candidate
+                )
+                if output.review_output is not None and latest is not None:
+                    formal_review = ReviewRecord(
+                        id=str(uuid4()), answer_id=latest.id, result=output.review_output
+                    )
+                    documents[f"assignments/{selected}/reviews/{formal_review.id}.yaml"] = (
+                        dump_yaml(formal_review.model_dump(mode="json"))
+                    )
+            elif output.review_output is not None:
                 if latest is None:
-                    raise ValueError("review requires a shared answer")
-                review = ReviewRecord(
+                    raise ValueError("review requires a formal answer")
+                formal_review = ReviewRecord(
                     id=str(uuid4()), answer_id=latest.id, result=output.review_output
                 )
-                documents[f"assignments/{selected}/reviews/{review.id}.yaml"] = dump_yaml(
-                    review.model_dump(mode="json")
-                )
-            else:
-                review = None if latest is None else self.latest_review(latest.id, selected)
-            if output.revision_output is not None:
-                if latest is None or review is None:
-                    raise ValueError("revision requires a review for the current answer")
-                revised, revised_document = self._new_answer(
-                    output.revision_output.revised_answer,
-                    member_id,
-                    latest.version + 1,
-                    selected,
-                )
-                revision = RevisionRecord(
-                    id=str(uuid4()),
-                    source_answer_id=latest.id,
-                    review_id=review.id,
-                    result_answer_id=revised.id,
-                    mode=output.revision_output.mode,
-                    change_summary="；".join(output.revision_output.changes),
-                    unresolved_issues=output.revision_output.unresolved_issues,
-                )
-                documents[self._answer_path(selected, revised.version)] = revised_document
-                documents[f"assignments/{selected}/revisions/{revised.version:04d}.yaml"] = (
-                    dump_yaml(revision.model_dump(mode="json"))
+                documents[f"assignments/{selected}/reviews/{formal_review.id}.yaml"] = dump_yaml(
+                    formal_review.model_dump(mode="json")
                 )
             self._store.write_batch(documents)
 
@@ -328,7 +565,18 @@ class WorkspaceRepository:
 
     @staticmethod
     def _new_answer(
-        content: str, member_id: str, version: int, assignment_id: str
+        content: str,
+        member_id: str,
+        version: int,
+        assignment_id: str,
+        *,
+        source: AnswerSource = AnswerSource.LEGACY,
+        based_on_version_id: str | None = None,
+        source_attachment_id: str | None = None,
+        adopted_candidate_id: str | None = None,
+        automatic_review_id: str | None = None,
+        revision_mode: RevisionMode | None = None,
+        version_note: str | None = None,
     ) -> tuple[AnswerRecord, str]:
         answer = AnswerRecord(
             id=str(uuid4()),
@@ -336,6 +584,13 @@ class WorkspaceRepository:
             version=version,
             content=content,
             operated_by_member_id=member_id,
+            source=source,
+            based_on_version_id=based_on_version_id,
+            source_attachment_id=source_attachment_id,
+            adopted_candidate_id=adopted_candidate_id,
+            automatic_review_id=automatic_review_id,
+            revision_mode=revision_mode,
+            version_note=version_note,
         )
         document = render_front_matter(
             {
@@ -343,6 +598,13 @@ class WorkspaceRepository:
                 "assignment_id": assignment_id,
                 "version": answer.version,
                 "operated_by_member_id": member_id,
+                "source": answer.source.value,
+                "based_on_version_id": based_on_version_id,
+                "source_attachment_id": source_attachment_id,
+                "adopted_candidate_id": adopted_candidate_id,
+                "automatic_review_id": automatic_review_id,
+                "revision_mode": None if revision_mode is None else revision_mode.value,
+                "version_note": version_note,
             },
             content,
         )
@@ -351,6 +613,19 @@ class WorkspaceRepository:
     @staticmethod
     def _answer_path(assignment_id: str, version: int) -> str:
         return f"assignments/{assignment_id}/answers/{version:04d}.md"
+
+    @staticmethod
+    def _candidate_path(assignment_id: str, candidate_id: str) -> str:
+        return f"assignments/{assignment_id}/candidates/{candidate_id}.md"
+
+    @staticmethod
+    def _candidate_review_path(assignment_id: str, review_id: str) -> str:
+        return f"assignments/{assignment_id}/candidate-reviews/{review_id}.yaml"
+
+    @staticmethod
+    def _candidate_document(candidate: CandidateDraft) -> str:
+        metadata = candidate.model_dump(mode="json", exclude={"content"})
+        return render_front_matter(metadata, candidate.content)
 
     @staticmethod
     def _assignment_path(assignment_id: str) -> str:

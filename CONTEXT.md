@@ -20,18 +20,26 @@ _Avoid_: Unique assignment, singleton assignment, answer
 The one assignment question currently selected for Agent work and result display.
 _Avoid_: Unique assignment, current answer
 
-**Shared Answer**:
-The team's single current answer to one assignment question. Revisions replace the current answer while preserving prior answer versions.
-_Avoid_: Assignment, personal answer, second answer
+**Formal Answer**:
+The one answer version currently accepted by the team for an assignment question. Agent output never becomes formal until the user explicitly adopts it.
+_Avoid_: Candidate, chat response, personal answer
 
 **Answer Version**:
-An immutable historical state of a shared answer for one assignment question.
+An immutable historical state of the formal answer for one assignment question.
 _Avoid_: New assignment, duplicate answer
+
+**Candidate Draft**:
+An Agent-generated or Agent-revised answer awaiting automatic review and an explicit user adoption decision. Candidates may coexist without changing the formal answer.
+_Avoid_: Formal answer, saved chat response
+
+**Adoption**:
+The only operation that publishes a reviewed candidate as the next formal answer version. Adoption is atomic and never overwrites history.
+_Avoid_: Save, automatic publish
 
 **Review**:
 An independent evaluation of a specific answer version.
 _Avoid_: Revision, score for an assignment question without a target version
 
 **Revision**:
-A change based on a reviewed answer version that produces the next answer version for the same assignment question.
-_Avoid_: New answer branch, new assignment
+A change based on a formal answer or candidate that produces another candidate. A revision does not publish a formal version by itself.
+_Avoid_: Adoption, direct answer replacement, new assignment

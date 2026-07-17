@@ -1,7 +1,7 @@
 """Atomic, locked and path-safe storage for YAML and Markdown files."""
 
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -39,7 +39,15 @@ class FileDataStore:
         with self._lock:
             self._atomic_write(target, content)
 
-    def write_batch(self, documents: dict[str, str]) -> None:
+    def write_bytes(self, relative: str | Path, content: bytes) -> None:
+        target = self.path(relative)
+        with self._lock:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            temporary = target.with_name(f".{target.name}.tmp")
+            temporary.write_bytes(content)
+            temporary.replace(target)
+
+    def write_batch(self, documents: Mapping[str, str | bytes]) -> None:
         """Durably commit a related set of files, completing it after interruption."""
         if not documents:
             return
@@ -51,7 +59,7 @@ class FileDataStore:
                 entries[relative] = {
                     "new": content,
                     "existed": target.exists(),
-                    "old": target.read_text(encoding="utf-8") if target.exists() else None,
+                    "old": target.read_bytes() if target.exists() else None,
                 }
             payload = {"entries": entries}
             self._atomic_write(journal, dump_yaml(payload))
@@ -106,9 +114,9 @@ class FileDataStore:
             raise ValueError("invalid pending file transaction")
         for relative, entry in entries.items():
             content = entry.get("new") if isinstance(entry, dict) else None
-            if not isinstance(relative, str) or not isinstance(content, str):
+            if not isinstance(relative, str) or not isinstance(content, (str, bytes)):
                 raise ValueError("invalid pending file transaction entry")
-            self._atomic_write(self.path(relative), content)
+            self._atomic_write_content(self.path(relative), content)
 
     def _rollback_batch(self, payload: Any) -> None:
         entries = payload.get("entries") if isinstance(payload, dict) else None
@@ -120,9 +128,9 @@ class FileDataStore:
             target = self.path(relative)
             if entry.get("existed"):
                 old = entry.get("old")
-                if not isinstance(old, str):
+                if not isinstance(old, bytes):
                     raise ValueError("invalid transaction backup")
-                self._atomic_write(target, old)
+                self._atomic_write_content(target, old)
             else:
                 target.unlink(missing_ok=True)
 
@@ -131,6 +139,16 @@ class FileDataStore:
         target.parent.mkdir(parents=True, exist_ok=True)
         temporary = target.with_name(f".{target.name}.tmp")
         temporary.write_text(content, encoding="utf-8")
+        temporary.replace(target)
+
+    @staticmethod
+    def _atomic_write_content(target: Path, content: str | bytes) -> None:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        temporary = target.with_name(f".{target.name}.tmp")
+        if isinstance(content, str):
+            temporary.write_text(content, encoding="utf-8")
+        else:
+            temporary.write_bytes(content)
         temporary.replace(target)
 
 

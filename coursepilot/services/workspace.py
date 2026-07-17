@@ -10,7 +10,6 @@ from coursepilot.models import (
     NotesResult,
     ReviewRecord,
     ReviewResult,
-    RevisionMode,
     RevisionRecord,
     Team,
     TeamMember,
@@ -63,28 +62,17 @@ class WorkspaceService:
     ) -> Assignment:
         return self._repository.update_assignment(assignment_id, title, requirements, rubric)
 
-    def save_answer(self, content: str, member_id: str) -> AnswerRecord:
-        return self._repository.add_answer(content, member_id)
+    def get_answer(self, answer_id: str) -> AnswerRecord:
+        return self._repository.get_answer(answer_id)
 
     def latest_answer(self) -> AnswerRecord | None:
         return self._repository.latest_answer()
 
+    def list_answers(self) -> list[AnswerRecord]:
+        return self._repository.list_answers()
+
     def save_review(self, answer_id: str, result: ReviewResult) -> ReviewRecord:
         return self._repository.add_review(answer_id, result)
-
-    def revise(
-        self,
-        source: AnswerRecord,
-        review: ReviewRecord,
-        content: str,
-        member_id: str,
-        mode: RevisionMode,
-        summary: str,
-        unresolved_issues: list[str] | None = None,
-    ) -> tuple[AnswerRecord, RevisionRecord]:
-        return self._repository.revise(
-            source, review, content, member_id, mode, summary, unresolved_issues
-        )
 
     def context(self, course: Course) -> CourseContext:
         assignment = self.get_assignment()

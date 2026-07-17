@@ -46,6 +46,32 @@ class RevisionMode(StrEnum):
     DEEP_RESTRUCTURE = "deep_restructure"
 
 
+class AnswerSource(StrEnum):
+    LEGACY = "legacy"
+    USER_UPLOAD = "user_upload"
+    ADOPTED_CANDIDATE = "adopted_candidate"
+
+
+class AssignmentUploadPurpose(StrEnum):
+    INITIAL_VERSION = "initial_version"
+    NEW_FORMAL_VERSION = "new_formal_version"
+    REFERENCE_ATTACHMENT = "reference_attachment"
+
+
+class AttachmentPurpose(StrEnum):
+    ASSIGNMENT_VERSION = "assignment_version"
+    ASSIGNMENT_REFERENCE = "assignment_reference"
+    OPTIMIZATION_DIRECTION = "optimization_direction"
+
+
+class CandidateStatus(StrEnum):
+    DRAFT = "draft"
+    READY_FOR_ADOPTION = "ready_for_adoption"
+    ADOPTED = "adopted"
+    DISCARDED = "discarded"
+    SUPERSEDED = "superseded"
+
+
 class AgentKind(StrEnum):
     NOTES = "notes"
     ASSIGNMENT = "assignment"
@@ -123,6 +149,90 @@ class AnswerRecord(Contract):
     version: PositiveVersion
     content: NonEmptyText
     operated_by_member_id: NonEmptyText
+    source: AnswerSource = AnswerSource.LEGACY
+    based_on_version_id: str | None = None
+    source_attachment_id: str | None = None
+    adopted_candidate_id: str | None = None
+    automatic_review_id: NonEmptyText | None = None
+    revision_mode: RevisionMode | None = None
+    version_note: str | None = None
+
+
+class AttachmentRecord(Contract):
+    id: NonEmptyText
+    assignment_id: NonEmptyText
+    purpose: AttachmentPurpose
+    original_file_name: NonEmptyText
+    original_path: NonEmptyText
+    normalized_path: NonEmptyText
+    normalized_content: NonEmptyText
+    content_hash: NonEmptyText
+
+
+class ImportedAssignment(Contract):
+    attachment: AttachmentRecord
+    answer_version: AnswerRecord | None = None
+
+
+class CandidateDraft(Contract):
+    id: NonEmptyText
+    assignment_id: NonEmptyText
+    conversation_id: NonEmptyText
+    base_answer_version_id: str | None = None
+    derived_from_candidate_id: str | None = None
+    superseded_by_candidate_id: str | None = None
+    content: NonEmptyText
+    status: CandidateStatus = CandidateStatus.DRAFT
+    automatic_review_id: NonEmptyText | None = None
+    revision_mode: RevisionMode | None = None
+    change_summary: str = ""
+    resolved_issues: list[NonEmptyText] = Field(default_factory=list)
+    unresolved_issues: list[NonEmptyText] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_state_links(self) -> "CandidateDraft":
+        reviewed = self.automatic_review_id is not None
+        if self.status in {CandidateStatus.READY_FOR_ADOPTION, CandidateStatus.ADOPTED}:
+            if not reviewed:
+                raise ValueError("ready or adopted candidate requires an automatic review")
+        elif reviewed:
+            raise ValueError("only ready or adopted candidate may reference an automatic review")
+        if self.status is CandidateStatus.SUPERSEDED:
+            if self.superseded_by_candidate_id is None:
+                raise ValueError("superseded candidate requires its replacement")
+        elif self.superseded_by_candidate_id is not None:
+            raise ValueError("only superseded candidate may reference its replacement")
+        return self
+
+
+class AutomaticReviewRecord(Contract):
+    id: NonEmptyText
+    candidate_id: NonEmptyText
+    result: "ReviewResult"
+
+
+class CandidateComparison(Contract):
+    candidate_id: NonEmptyText
+    base_answer_version_id: str | None = None
+    base_content: str
+    candidate_content: NonEmptyText
+    unified_diff: NonEmptyText
+    change_summary: str = ""
+    resolved_issues: list[NonEmptyText] = Field(default_factory=list)
+    unresolved_issues: list[NonEmptyText] = Field(default_factory=list)
+
+
+class AnswerVersionComparison(Contract):
+    source_answer_id: NonEmptyText
+    result_answer_id: NonEmptyText
+    source_version: PositiveVersion
+    result_version: PositiveVersion
+    source_content: NonEmptyText
+    result_content: NonEmptyText
+    unified_diff: NonEmptyText
+    change_summary: str = ""
+    resolved_issues: list[NonEmptyText] = Field(default_factory=list)
+    unresolved_issues: list[NonEmptyText] = Field(default_factory=list)
 
 
 class ReviewRecord(Contract):

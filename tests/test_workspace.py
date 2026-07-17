@@ -7,6 +7,8 @@ from coursepilot.file_store import FileDataStore, render_front_matter
 from coursepilot.models import (
     AgentKind,
     AssignmentResult,
+    AssignmentUploadPurpose,
+    CandidateStatus,
     Course,
     DimensionScore,
     MainAgentResult,
@@ -19,7 +21,12 @@ from coursepilot.models import (
     TeamMember,
 )
 from coursepilot.repositories import WorkspaceRepository
-from coursepilot.services import WorkspaceService
+from coursepilot.services import (
+    AdoptCandidateService,
+    AssignmentArtifactService,
+    CandidateDraftService,
+    WorkspaceService,
+)
 
 
 def review() -> ReviewResult:
@@ -56,16 +63,27 @@ def test_single_workspace_versions_review_and_revision_survive_restart(tmp_path:
     service = WorkspaceService(WorkspaceRepository(data_root))
     service.initialize_team("Architecture Group", [TeamMember(id="alice", name="Alice")])
     service.initialize_assignment("CoursePilot", "Design and implement the system", "100 points")
-    first = service.save_answer("Version one", "alice")
-    saved_review = service.save_review(first.id, review())
-    second, revision = service.revise(
-        first,
-        saved_review,
-        "Version two with alternatives",
+    artifacts = AssignmentArtifactService(data_root, service)
+    imported = artifacts.import_assignment(
+        "v1.txt",
+        b"Version one",
+        AssignmentUploadPurpose.INITIAL_VERSION,
         "alice",
-        RevisionMode.CONSERVATIVE,
-        "Added alternatives",
+        "Initial",
     )
+    assert imported.answer_version is not None
+    first = imported.answer_version
+    saved_review = service.save_review(first.id, review())
+    drafts = CandidateDraftService(data_root, service)
+    candidate = drafts.create(
+        "Version two with alternatives",
+        "conversation-1",
+        revision_mode=RevisionMode.CONSERVATIVE,
+        change_summary="Added alternatives",
+        resolved_issues=["Missing alternatives"],
+    )
+    ready = drafts.complete_automatic_review(candidate.id, review())
+    second = AdoptCandidateService(drafts, service).adopt(ready.id, "alice")
 
     restored = WorkspaceService(WorkspaceRepository(data_root))
     course = Course(
@@ -79,46 +97,24 @@ def test_single_workspace_versions_review_and_revision_survive_restart(tmp_path:
     context = restored.context(course)
 
     assert second.version == 2
-    assert revision.source_answer_id == first.id
+    assert saved_review.answer_id == first.id
     assert context.current_answer == "Version two with alternatives"
     assert context.answer_version == 2
     assert restored.get_assignment().title == "CoursePilot"
-    comparison = restored.compare_revision(revision)
-    assert comparison.operated_by_member_id == "alice"
+    comparison = AssignmentArtifactService(data_root, restored).compare_answer_versions(
+        first.id, second.id
+    )
+    assert comparison.change_summary == "Added alternatives"
     assert comparison.resolved_issues == ["Missing alternatives"]
 
 
-def test_invalid_revision_rolls_back_answer_and_revision_together(tmp_path: Path) -> None:
+def test_workspace_has_no_direct_formal_answer_write_or_revision_interface(tmp_path: Path) -> None:
     data_root = tmp_path / "data"
     service = WorkspaceService(WorkspaceRepository(data_root))
     service.initialize_team("Group", [TeamMember(id="alice", name="Alice")])
     service.initialize_assignment("Only", "Do it")
-    first = service.save_answer("Draft", "alice")
-    saved_review = service.save_review(first.id, review())
-
-    with pytest.raises(ValueError):
-        service.revise(
-            first,
-            saved_review,
-            "Should not persist",
-            "alice",
-            RevisionMode.CONSERVATIVE,
-            "",
-        )
-
-    assert (
-        service.context(
-            Course(
-                id="architecture",
-                name="Architecture",
-                course_date=date(2026, 7, 17),
-                teacher="Teacher",
-                topic="Design",
-                is_active=True,
-            )
-        ).answer_version
-        == 1
-    )
+    assert not hasattr(service, "save_answer")
+    assert not hasattr(service, "revise")
 
 
 def test_second_team_is_rejected_but_multiple_assignments_are_isolated(tmp_path: Path) -> None:
@@ -127,14 +123,31 @@ def test_second_team_is_rejected_but_multiple_assignments_are_isolated(tmp_path:
     service = WorkspaceService(repository)
     service.initialize_team("One", [TeamMember(id="alice", name="Alice")])
     first_assignment = service.initialize_assignment("First assignment", "Do it")
-    first_answer = service.save_answer("First answer", "alice")
+    artifacts = AssignmentArtifactService(data_root, service)
+    imported_first = artifacts.import_assignment(
+        "first.txt",
+        b"First answer",
+        AssignmentUploadPurpose.INITIAL_VERSION,
+        "alice",
+        "First",
+    )
+    assert imported_first.answer_version is not None
+    first_answer = imported_first.answer_version
     service.save_review(first_answer.id, review())
 
     with pytest.raises(ValueError, match="one team"):
         service.initialize_team("Two", [TeamMember(id="bob", name="Bob")])
 
     second_assignment = service.create_assignment("assignment-2", "Second", "Also do it")
-    second_answer = service.save_answer("Second answer", "alice")
+    imported_second = artifacts.import_assignment(
+        "second.txt",
+        b"Second answer",
+        AssignmentUploadPurpose.INITIAL_VERSION,
+        "alice",
+        "Second",
+    )
+    assert imported_second.answer_version is not None
+    second_answer = imported_second.answer_version
 
     assert first_assignment.id != second_assignment.id
     assert first_answer.assignment_id == first_assignment.id
@@ -144,7 +157,15 @@ def test_second_team_is_rejected_but_multiple_assignments_are_isolated(tmp_path:
     service.activate_assignment(first_assignment.id)
     assert service.get_assignment().id == first_assignment.id
     assert service.latest_answer().content == "First answer"
-    assert service.save_answer("First answer v2", "alice").version == 2
+    first_v2 = artifacts.import_assignment(
+        "first-v2.txt",
+        b"First answer v2",
+        AssignmentUploadPurpose.NEW_FORMAL_VERSION,
+        "alice",
+        "First v2",
+    )
+    assert first_v2.answer_version is not None
+    assert first_v2.answer_version.version == 2
 
 
 def test_legacy_single_assignment_files_migrate_without_losing_answer(tmp_path: Path) -> None:
@@ -194,7 +215,9 @@ def test_legacy_single_assignment_files_migrate_without_losing_answer(tmp_path: 
     assert migrated_revision is not None and migrated_revision.id == "legacy-revision"
 
 
-def test_agent_outputs_are_persisted_as_shared_reviewed_revision(tmp_path: Path) -> None:
+def test_agent_outputs_are_persisted_as_reviewed_candidate_until_user_adopts(
+    tmp_path: Path,
+) -> None:
     data_root = tmp_path / "data"
     service = WorkspaceService(WorkspaceRepository(data_root))
     service.initialize_team("Group", [TeamMember(id="alice", name="Alice")])
@@ -242,8 +265,13 @@ def test_agent_outputs_are_persisted_as_shared_reviewed_revision(tmp_path: Path)
 
     restored = service.apply_agent_output(course, output, "alice")
 
-    assert restored.current_answer == "Revised draft"
-    assert restored.answer_version == 2
+    assert restored.current_answer is None
+    assert restored.answer_version == 1
+    candidates = WorkspaceRepository(data_root).list_candidates()
+    assert len(candidates) == 1
+    assert candidates[0].content == "Revised draft"
+    assert candidates[0].status is CandidateStatus.DRAFT
+    assert candidates[0].revision_mode is RevisionMode.CONSERVATIVE
 
 
 def test_agent_output_transaction_rolls_back_answer_when_revision_has_no_review(
