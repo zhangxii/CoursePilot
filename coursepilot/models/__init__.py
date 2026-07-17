@@ -1,6 +1,7 @@
 """Validated domain and agent output contracts."""
 
 from coursepilot.models.contracts import (
+    AgentKind,
     Assignment,
     AssignmentResult,
     CourseContext,
@@ -19,6 +20,7 @@ from coursepilot.models.contracts import (
 )
 
 __all__ = [
+    "AgentKind",
     "Assignment",
     "AssignmentResult",
     "CourseContext",

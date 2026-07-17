@@ -34,6 +34,13 @@ class RevisionMode(StrEnum):
     DEEP_RESTRUCTURE = "deep_restructure"
 
 
+class AgentKind(StrEnum):
+    NOTES = "notes"
+    ASSIGNMENT = "assignment"
+    REVIEW = "review"
+    REVISION = "revision"
+
+
 class MaterialMetadata(Contract):
     course_id: NonEmptyText
     course_name: NonEmptyText
@@ -62,16 +69,6 @@ class Assignment(Contract):
     title: NonEmptyText
     requirements: NonEmptyText
     rubric: str | None = None
-
-
-class CourseContext(Contract):
-    active_course_id: NonEmptyText
-    active_course_name: NonEmptyText
-    team_id: Literal["main_team"] = "main_team"
-    assignment_id: Literal["main_assignment"] = "main_assignment"
-    current_answer: str | None = None
-    latest_review: dict[str, object] | None = None
-    answer_version: PositiveVersion = 1
 
 
 class SourceRef(Contract):
@@ -137,6 +134,16 @@ class ReviewResult(Contract):
         return self
 
 
+class CourseContext(Contract):
+    active_course_id: NonEmptyText
+    active_course_name: NonEmptyText
+    team_id: Literal["main_team"] = "main_team"
+    assignment_id: Literal["main_assignment"] = "main_assignment"
+    current_answer: str | None = None
+    latest_review: ReviewResult | None = None
+    answer_version: PositiveVersion = 1
+
+
 class RevisionResult(Contract):
     mode: RevisionMode
     source_version: PositiveVersion
@@ -153,7 +160,7 @@ class RevisionResult(Contract):
 
 
 class MainAgentResult(Contract):
-    intent: Literal["notes", "assignment", "review", "revision"]
-    invoked_agents: list[NonEmptyText]
+    intent: AgentKind
+    invoked_agents: list[AgentKind]
     final_response: NonEmptyText
     context: CourseContext

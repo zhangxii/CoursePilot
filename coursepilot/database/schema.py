@@ -71,10 +71,10 @@ CREATE TABLE IF NOT EXISTS answers (
     ),
     version INTEGER NOT NULL CHECK (version >= 1),
     content TEXT NOT NULL CHECK (length(trim(content)) > 0),
-    operated_by_member_id TEXT,
+    operated_by_member_id TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (assignment_id) REFERENCES assignment(id) ON DELETE CASCADE,
-    FOREIGN KEY (operated_by_member_id) REFERENCES team_members(id) ON DELETE SET NULL,
+    FOREIGN KEY (operated_by_member_id) REFERENCES team_members(id) ON DELETE RESTRICT,
     UNIQUE (assignment_id, version)
 );
 
@@ -84,7 +84,8 @@ CREATE TABLE IF NOT EXISTS reviews (
     result_json TEXT NOT NULL CHECK (json_valid(result_json)),
     total_score INTEGER NOT NULL CHECK (total_score BETWEEN 0 AND 100),
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (answer_id) REFERENCES answers(id) ON DELETE CASCADE
+    FOREIGN KEY (answer_id) REFERENCES answers(id) ON DELETE CASCADE,
+    UNIQUE (id, answer_id)
 );
 
 CREATE TABLE IF NOT EXISTS revisions (
@@ -94,12 +95,12 @@ CREATE TABLE IF NOT EXISTS revisions (
     result_answer_id TEXT NOT NULL UNIQUE,
     mode TEXT NOT NULL CHECK (mode IN ('conservative', 'deep_restructure')),
     change_summary TEXT NOT NULL CHECK (length(trim(change_summary)) > 0),
-    operated_by_member_id TEXT,
+    operated_by_member_id TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (source_answer_id) REFERENCES answers(id) ON DELETE RESTRICT,
-    FOREIGN KEY (review_id) REFERENCES reviews(id) ON DELETE RESTRICT,
+    FOREIGN KEY (review_id, source_answer_id) REFERENCES reviews(id, answer_id)
+        ON DELETE RESTRICT,
     FOREIGN KEY (result_answer_id) REFERENCES answers(id) ON DELETE RESTRICT,
-    FOREIGN KEY (operated_by_member_id) REFERENCES team_members(id) ON DELETE SET NULL
+    FOREIGN KEY (operated_by_member_id) REFERENCES team_members(id) ON DELETE RESTRICT
 );
 
 CREATE INDEX IF NOT EXISTS idx_materials_course_status
