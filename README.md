@@ -111,6 +111,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\start.ps1
 2. 启动 Streamlit；
 3. 首次写入时自动创建 `data/` 下的文件目录。
 
+项目已关闭 Streamlit 匿名使用统计，因此首次启动不会询问邮箱地址。
+
 如果当前 PowerShell 允许执行本地脚本，也可以使用更短的命令：
 
 ```powershell

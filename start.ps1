@@ -12,5 +12,5 @@ conda run -n coursepilot python -m coursepilot check-config
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 Write-Host "[CoursePilot] Starting http://localhost:8501"
-conda run -n coursepilot python -m streamlit run coursepilot/app.py
+conda run -n coursepilot python -m streamlit run coursepilot/app.py --browser.gatherUsageStats=false
 exit $LASTEXITCODE
