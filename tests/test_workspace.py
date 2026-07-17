@@ -5,10 +5,14 @@ import pytest
 
 from coursepilot.database import initialize_database
 from coursepilot.models import (
+    AgentKind,
+    AssignmentResult,
     Course,
     DimensionScore,
+    MainAgentResult,
     ReviewResult,
     RevisionMode,
+    RevisionResult,
     SourceRef,
     TeamMember,
 )
@@ -128,3 +132,56 @@ def test_second_team_and_assignment_are_rejected(tmp_path: Path) -> None:
         service.initialize_team("Two", [TeamMember(id="bob", name="Bob")])
     with pytest.raises(ValueError, match="one assignment"):
         service.initialize_assignment("Second", "Not allowed")
+
+
+def test_agent_outputs_are_persisted_as_shared_reviewed_revision(tmp_path: Path) -> None:
+    database = tmp_path / "business.db"
+    initialize_database(database)
+    service = WorkspaceService(WorkspaceRepository(database))
+    service.initialize_team("Group", [TeamMember(id="alice", name="Alice")])
+    service.initialize_assignment("Only", "Do it")
+    course = Course(
+        id="architecture",
+        name="Architecture",
+        course_date=date(2026, 7, 17),
+        teacher="Teacher",
+        topic="Design",
+        is_active=True,
+    )
+    from coursepilot.repositories import CourseRepository
+
+    CourseRepository(database).add(
+        course_id=course.id,
+        name=course.name,
+        course_date=course.course_date,
+        teacher=course.teacher,
+        topic=course.topic,
+        active=True,
+    )
+    initial_context = service.context(course)
+    output = MainAgentResult(
+        intent=AgentKind.REVISION,
+        invoked_agents=[AgentKind.ASSIGNMENT, AgentKind.REVIEW, AgentKind.REVISION],
+        final_response="Revised",
+        context=initial_context,
+        assignment_output=AssignmentResult(
+            task_understanding="Deliver a design",
+            shared_answer="Draft",
+            course_evidence=[],
+            uncertainties=[],
+        ),
+        review_output=review(),
+        revision_output=RevisionResult(
+            mode=RevisionMode.CONSERVATIVE,
+            source_version=1,
+            result_version=2,
+            revised_answer="Revised draft",
+            changes=["Added alternatives"],
+            unresolved_issues=[],
+        ),
+    )
+
+    restored = service.apply_agent_output(course, output, "alice")
+
+    assert restored.current_answer == "Revised draft"
+    assert restored.answer_version == 2

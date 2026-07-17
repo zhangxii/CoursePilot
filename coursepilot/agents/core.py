@@ -136,7 +136,14 @@ class SqliteAgentRuntime:
         return await runner.run(agent, message, session=self.session(session_id))
 
 
-def build_sdk_main_agent(model: str) -> Agent[None]:
+def build_sdk_main_agent(
+    model: str,
+    *,
+    notes_tools: list[Any] | None = None,
+    assignment_tools: list[Any] | None = None,
+    review_tools: list[Any] | None = None,
+    revision_tools: list[Any] | None = None,
+) -> Agent[None]:
     """Build the production Agents SDK graph using specialists as tools, not handoffs."""
     specialists = [
         Agent(
@@ -144,24 +151,28 @@ def build_sdk_main_agent(model: str) -> Agent[None]:
             model=model,
             instructions="先检索当前课程并生成结构化笔记。",
             output_type=NotesResult,
+            tools=notes_tools or [],
         ),
         Agent(
             name="AssignmentAgent",
             model=model,
             instructions="读取唯一作业和当前答案，检索当前课程，生成并自检答案。",
             output_type=AssignmentResult,
+            tools=assignment_tools or [],
         ),
         Agent(
             name="ReviewAgent",
             model=model,
             instructions="独立评审给定答案，不接收生成过程，只引用允许的课程证据。",
             output_type=ReviewResult,
+            tools=review_tools or [],
         ),
         Agent(
             name="RevisionAgent",
             model=model,
             instructions="仅在已有答案和评审时按指定模式修改并复查问题。",
             output_type=RevisionResult,
+            tools=revision_tools or [],
         ),
     ]
     return Agent(
@@ -170,6 +181,8 @@ def build_sdk_main_agent(model: str) -> Agent[None]:
         instructions=(
             "识别总结、完成、评审、修改意图；当前课程不明确时询问，不猜测。"
             "专业 Agent 只能作为工具调用，最终控制权和响应整合由你保留。"
+            "必须把专业 Agent 的结构化结果原样放入对应的 notes_output、"
+            "assignment_output、review_output 或 revision_output 字段，供应用服务持久化。"
         ),
         tools=[
             agent.as_tool(

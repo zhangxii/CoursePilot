@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Protocol
 
 import streamlit as st
-from agents import Runner
+from agents import Agent, Runner, custom_span, function_tool
 from openai import AsyncOpenAI
 
 from coursepilot.agents import SqliteAgentRuntime, build_sdk_main_agent
@@ -14,8 +14,15 @@ from coursepilot.config import load_settings
 from coursepilot.database import initialize_database
 from coursepilot.ingestion import MaterialIngestionService, UploadValidator
 from coursepilot.integrations import OpenAIVectorStoreGateway
-from coursepilot.models import MaterialMetadata, MaterialStatus, TeamMember
+from coursepilot.models import (
+    CourseContext,
+    MainAgentResult,
+    MaterialMetadata,
+    MaterialStatus,
+    TeamMember,
+)
 from coursepilot.repositories import CourseRepository, MaterialRepository, WorkspaceRepository
+from coursepilot.retrieval import ArchiveSearchReason, search_course_archive, search_current_course
 from coursepilot.services import CourseService, WorkspaceService
 from coursepilot.ui import WorkspaceView
 
@@ -53,6 +60,9 @@ class ProductionController:
         active = self._courses.get_active()
         materials = [] if active is None else self._materials.list_for_course(active.id)
         context = None if active is None else self._workspace.context(active)
+        repository = WorkspaceRepository(self._settings.database_path)
+        revision = repository.latest_revision()
+        comparison = None if revision is None else repository.compare_revision(revision, [])
         return WorkspaceView(
             team=self._workspace.get_team(),
             courses=courses,
@@ -61,6 +71,7 @@ class ProductionController:
             answer_version=1 if context is None else context.answer_version,
             review=None if context is None else context.latest_review,
             materials=materials,
+            comparison=comparison,
         )
 
     def initialize_workspace(
@@ -119,12 +130,84 @@ class ProductionController:
         self.upload_material(material.file_name, source.read_bytes())
 
     def run_agent(self, message: str) -> str:
+        active = self._courses.get_active()
+        if active is None:
+            raise ValueError("请先选择当前课程")
+        context = self._workspace.context(active)
+        agent = self._build_agent(context)
+        enriched_message = (
+            f"业务上下文：{context.model_dump_json()}\n"
+            f"唯一大作业：{self._workspace.get_assignment().model_dump_json()}\n"
+            f"用户请求：{message}"
+        )
         result = Runner.run_sync(
-            build_sdk_main_agent(self._settings.model_name),
-            message,
+            agent,
+            enriched_message,
             session=self._sessions.session("main_team"),
         )
-        return str(result.final_output)
+        output = MainAgentResult.model_validate(result.final_output)
+        self._persist_agent_output(output)
+        return output.final_response
+
+    def _build_agent(self, context: CourseContext) -> Agent[None]:
+        @function_tool
+        async def search_current(query: str) -> str:
+            """Search only the active course and return cited evidence."""
+            with custom_span(
+                "retrieval_filter",
+                {"scope": "current", "active_course_id": context.active_course_id},
+            ):
+                result = await search_current_course(
+                    query,
+                    context,
+                    gateway=self._vector,
+                    max_results=self._settings.max_search_results,
+                )
+            return result.model_dump_json()
+
+        @function_tool
+        async def search_archive(query: str, reason: ArchiveSearchReason) -> str:
+            """Search archived courses only for an approved reason."""
+            with custom_span(
+                "retrieval_filter",
+                {
+                    "scope": "archive",
+                    "active_course_id": context.active_course_id,
+                    "reason": reason.value,
+                },
+            ):
+                result = await search_course_archive(
+                    query,
+                    reason,
+                    context,
+                    gateway=self._vector,
+                    max_results=self._settings.max_search_results,
+                )
+            return result.model_dump_json()
+
+        @function_tool
+        def get_assignment() -> str:
+            """Return the singleton assignment and its rubric."""
+            return self._workspace.get_assignment().model_dump_json()
+
+        @function_tool
+        def get_current_answer() -> str:
+            """Return the current shared answer and latest review from business storage."""
+            return context.model_dump_json()
+
+        return build_sdk_main_agent(
+            self._settings.model_name,
+            notes_tools=[search_current, search_archive],
+            assignment_tools=[get_assignment, get_current_answer, search_current, search_archive],
+            review_tools=[get_assignment, get_current_answer, search_current, search_archive],
+            revision_tools=[get_current_answer, search_current, search_archive],
+        )
+
+    def _persist_agent_output(self, output: MainAgentResult) -> None:
+        active = self._courses.get_active()
+        if active is None:
+            raise ValueError("请先选择当前课程")
+        self._workspace.apply_agent_output(active, output, "member-1")
 
 
 def render(view: WorkspaceView, controller: AppController) -> None:
@@ -182,6 +265,11 @@ def render(view: WorkspaceView, controller: AppController) -> None:
         if view.review is not None:
             st.metric("最近评审", view.review.total_score)
         st.radio("修改模式", ["保守修改", "深度重构"], horizontal=True)
+        if view.comparison is not None:
+            st.write("操作成员", view.comparison.operated_by_member_id)
+            st.write("变更摘要", view.comparison.change_summary)
+            st.write("已解决问题", view.comparison.resolved_issues)
+            st.write("未解决问题", view.comparison.unresolved_issues)
 
 
 def main() -> None:

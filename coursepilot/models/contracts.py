@@ -238,3 +238,7 @@ class MainAgentResult(Contract):
     invoked_agents: list[AgentKind]
     final_response: NonEmptyText
     context: CourseContext
+    notes_output: NotesResult | None = None
+    assignment_output: AssignmentResult | None = None
+    review_output: ReviewResult | None = None
+    revision_output: RevisionResult | None = None

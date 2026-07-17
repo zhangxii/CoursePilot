@@ -2,7 +2,14 @@
 
 from pydantic import BaseModel, ConfigDict
 
-from coursepilot.models import Assignment, Course, MaterialRecord, ReviewResult, Team
+from coursepilot.models import (
+    AnswerComparison,
+    Assignment,
+    Course,
+    MaterialRecord,
+    ReviewResult,
+    Team,
+)
 
 
 class WorkspaceView(BaseModel):
@@ -15,6 +22,7 @@ class WorkspaceView(BaseModel):
     answer_version: int
     review: ReviewResult | None
     materials: list[MaterialRecord]
+    comparison: AnswerComparison | None = None
 
     @property
     def active_course(self) -> Course | None:

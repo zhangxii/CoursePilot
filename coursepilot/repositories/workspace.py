@@ -197,3 +197,20 @@ class WorkspaceRepository:
             resolved_issues=[issue for issue in critical if issue not in unresolved],
             unresolved_issues=unresolved,
         )
+
+    def latest_revision(self) -> RevisionRecord | None:
+        with connect_database(self._database_path) as db:
+            row = db.execute(
+                "SELECT id,source_answer_id,review_id,result_answer_id,mode,change_summary "
+                "FROM revisions ORDER BY created_at DESC,id DESC LIMIT 1"
+            ).fetchone()
+        if row is None:
+            return None
+        return RevisionRecord(
+            id=row[0],
+            source_answer_id=row[1],
+            review_id=row[2],
+            result_answer_id=row[3],
+            mode=RevisionMode(row[4]),
+            change_summary=row[5],
+        )
