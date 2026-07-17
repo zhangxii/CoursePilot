@@ -325,18 +325,16 @@ get_review_result
 
 # 五、主Agent应该维护什么上下文
 
-在Session中保存：
+每条对话有独立 Session，并保存轻量的对话上下文：
 
 ```python
-class CourseContext(BaseModel):
+class ConversationContext(BaseModel):
+    conversation_id: str
     active_course_id: str
     active_course_name: str
-    active_assignment_id: str | None
-    assignment_title: str | None
-    assignment_requirements: str | None
-    current_answer: str | None
-    latest_review: dict | None
-    answer_version: int = 1
+    active_assignment_id: str
+    base_answer_version_id: str | None
+    parent_conversation_id: str | None
 ```
 
 例如用户说：
@@ -345,12 +343,12 @@ class CourseContext(BaseModel):
 
 主Agent需要知道：
 
-* “刚才的答案”是哪一版；
+* 当前对话绑定的是哪一版正式答案；
 * 当前是哪门课；
-* 上一次评分结果是什么；
-* 用户要局部修改还是完整重构。
+* 用户是否提供了优化方向；
+* 用户选择保留原方案还是允许重组。
 
-Agents SDK 的 Session 接口能够在多轮运行间维护会话历史；本项目使用 JSONL adapter 持久化消息。([OpenAI GitHub Pages][3])
+Agents SDK 的 Session 接口能够在多轮运行间维护会话历史；本项目为每条对话使用独立 JSONL adapter。新对话默认绑定当前正式版本但不复制其他对话消息。([OpenAI GitHub Pages][3])
 
 Markdown/YAML 还要单独保存业务数据：
 
@@ -360,7 +358,10 @@ materials
 assignments
 answers
 reviews
-revisions
+candidate_drafts
+optimization_tasks
+conversations
+attachments
 ```
 
 **JSONL Session 是对话记忆，Markdown/YAML 是业务记录，两者不要混为一谈。**
@@ -402,18 +403,53 @@ revisions
 
 ---
 
-# 七、推荐的Agent执行架构
+# 七、作业协作工作区的产品闭环
+
+CoursePilot 不应只提供一个让用户猜指令的聊天框。作业、对话和 Agent 输出必须分开建模：
+
+* **正式版本**：小组当前认可的作业成果，每道题只有一个当前正式版本，历史版本永久保留；
+* **候选稿**：Agent 生成或优化的待确认结果，可以并存，但不会自动覆盖正式版本；
+* **对话**：围绕明确基础版本展开的讨论，可新建、切换和分支，彼此不共享消息；
+* **优化任务**：记录基础版本、用户方向、Agent 建议、修改强度和各类约束；
+* **审查**：生成和优化后的独立质量检查；自动审查不等于用户主动发起的正式评审。
+
+用户既可以让 Agent 生成初版，也可以上传自己的 `.md`、`.txt` 或 `.docx` 稿件。课程资料上传与作业稿上传必须是两个清楚的入口：课程资料进入检索库，作业稿进入正式版本或附件体系。用户在线下修改后重新上传时，应创建下一正式版本而不是覆盖历史。
+
+同一道题允许并行探索不同方案。例如 Agent 方案在对话 A 中讨论，用户上传的方案成为正式版本 v2 后，可以新建对话 B 并明确以 v2 为基础。对话 B 不继承对话 A 的消息，也不会因为“刚才的答案”而引用错误方案。
+
+优化流程支持两种输入：用户直接填写或上传优化方向；用户没有方向时，先由 Agent 分析问题、理由、影响和优先级，用户选择后再开始优化。修改强度分为：
+
+* **保留原方案并优化**：保留核心观点和主要结构，只修复问题、补充缺失并改善表达；
+* **允许重组方案**：允许调整结构、论证顺序和薄弱方案，但必须遵守用户声明的保留项与禁止项。
+
+生成和优化统一采用：
 
 ```text
-用户输入
+生成或修改
+→ 独立 ReviewAgent 自动审查
+→ 对可修复问题执行一次修正
+→ 展示候选稿、差异和审查摘要
+→ 用户采用为正式新版本，或继续修改/放弃
+```
+
+界面必须解释当前状态和下一步，而不是只展示名词页签。首次进入提供“已有作业稿”“只有题目和资料”“先整理课程资料”三种入口；首页持续展示创建作业、准备资料/稿件、获得初版、自动审查、定向优化、确认版本的流程。空状态同时说明用途并提供主按钮，按钮使用“动作 + 结果”措辞，例如“让 Agent 生成初版”“分析问题并提出方向”“采用为正式新版本”。
+
+---
+
+# 八、推荐的Agent执行架构
+
+```text
+用户在明确对话中输入
    ↓
 课程学习主Agent
    ↓
 判断当前意图
    ├── 总结资料 → 笔记Agent
-   ├── 完成作业 → 作业Agent
+   ├── 完成作业 → 作业Agent ─┐
    ├── 评分评价 → 评审Agent
-   └── 修改答案 → 修改Agent
+   └── 修改答案 → 修改Agent ─┤
+                              ↓
+                       独立评审Agent自动审查
                     ↓
           默认检索当前课程
                     ↓
@@ -421,7 +457,9 @@ revisions
                     ↓
               输出结构化结果
                     ↓
-          保存答案、评分与版本
+          保存候选稿与审查摘要
+                    ↓
+          用户采用后保存正式版本
 ```
 
 主Agent不是简单的关键词路由器，它还负责判断：
@@ -429,12 +467,13 @@ revisions
 * 当前课程是什么；
 * 是否需要历史知识；
 * 当前输入缺少什么；
-* 应先评审还是直接修改；
+* 对话绑定的是哪一版正式答案；
+* 用户是否已提供优化方向；
 * 是否需要调用多个专业Agent。
 
 ---
 
-# 八、为什么现在选Agents SDK，而不是LangGraph
+# 九、为什么现在选Agents SDK，而不是LangGraph
 
 LangGraph更适合：
 
@@ -449,38 +488,44 @@ LangGraph更适合：
 但你的主要流程只有：
 
 ```text
-识别意图
+识别意图与对话基础版本
 → 检索资料
 → 调用专业Agent
-→ 输出和保存
+→ 独立审查并至多修正一次
+→ 保存候选稿
+→ 用户采用时创建正式版本
 ```
 
 用LangGraph会让你先花大量时间学习State、Node、Edge、Checkpoint，而不是练习Agent的工具选择、上下文管理和检索策略。
 
 因此建议：
 
-> **第一版使用OpenAI Agents SDK；做到需要复杂状态机、可暂停恢复和人工审核时，再用LangGraph重构。**
+> **当前阶段继续使用 OpenAI Agents SDK；候选稿状态机和采用事务由应用模块控制。只有出现跨进程暂停恢复、复杂循环或多角色审批链时，再评估 LangGraph。**
 
 ---
 
-# 九、最终建议版本
+# 十、最终建议版本
 
 ```text
 前端：Streamlit
 Agent框架：OpenAI Agents SDK
 Agent模式：1个主Agent + 4个专业Agent作为工具
-当前会话：JSONL Session
-业务数据：Markdown + YAML 文件
+对话：每条对话独立 JSONL Session，可分支并绑定正式版本
+业务数据：Markdown + YAML 文件，上传原件独立保存
 长期资料：带 YAML Front Matter 的本地 Markdown 文件
 检索策略：当前课程优先，历史课程按需
-文件输入：用户预处理的 Markdown / UTF-8 纯文本
+课程资料输入：用户预处理的 Markdown / UTF-8 纯文本
+作业稿与优化方向：Markdown / UTF-8 纯文本 / DOCX
+成果发布：Agent 先生成候选稿，用户采用后进入正式版本链
+质量闭环：生成或优化后强制独立自动审查
+交互：流程导航、空状态说明、动作型按钮和常驻上下文
 输出约束：Pydantic
 调试：应用结构化日志与本地 trace 事件
 ```
 
 应用层记录检索范围、工具调用和专业 Agent 执行顺序，便于观察主 Agent 为什么选择某个资料范围，以及哪一步导致结果偏离；运行轨迹不依赖 OpenAI tracing 服务。
 
-这套设计既能较快完成产品，又能真正练到**Agent编排、工具调用、RAG、记忆、上下文隔离、结构化输出和可观测性**，而不是只给普通大模型应用套一个“智能体”名字。
+这套设计让系统从“会调用 Agent 的聊天页面”转变为可理解、可追溯、由用户掌握正式成果发布权的作业协作工作区，同时保留对 **Agent 编排、工具调用、RAG、记忆、上下文隔离、结构化输出和可观测性** 的练习价值。
 
 [1]: https://openai.github.io/openai-agents-python/?utm_source=chatgpt.com
 [2]: https://developers.openai.com/api/docs/guides/retrieval?utm_source=chatgpt.com
