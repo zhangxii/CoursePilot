@@ -4,8 +4,8 @@ from pathlib import Path
 import pytest
 
 from coursepilot.database import initialize_database
-from coursepilot.models import CourseContext
-from coursepilot.repositories import CourseRepository
+from coursepilot.models import CourseContext, MaterialMetadata, MaterialStatus, MaterialType
+from coursepilot.repositories import CourseRepository, MaterialRepository
 from coursepilot.services import CourseNotFoundError, CourseService
 
 
@@ -30,6 +30,36 @@ def test_course_service_creates_lists_and_switches_the_single_active_course(
         teacher="刘飞",
         topic="架构设计",
     )
+    materials = MaterialRepository(database)
+    first_material = materials.reserve(
+        MaterialMetadata(
+            course_id=first.id,
+            course_name=first.name,
+            course_date=first.course_date,
+            teacher=first.teacher,
+            topic=first.topic,
+            material_type=MaterialType.PDF,
+            status=MaterialStatus.CURRENT,
+        ),
+        file_name="requirements.pdf",
+        file_hash="requirements-hash",
+    )
+    second_material = materials.reserve(
+        MaterialMetadata(
+            course_id=second.id,
+            course_name=second.name,
+            course_date=second.course_date,
+            teacher=second.teacher,
+            topic=second.topic,
+            material_type=MaterialType.PDF,
+            status=MaterialStatus.CURRENT,
+        ),
+        file_name="architecture.pdf",
+        file_hash="architecture-hash",
+    )
+
+    assert first_material.status is MaterialStatus.CURRENT
+    assert second_material.status is MaterialStatus.ARCHIVED
 
     assert first.is_active is True
     assert second.is_active is False
@@ -48,6 +78,8 @@ def test_course_service_creates_lists_and_switches_the_single_active_course(
     assert updated_context.active_course_id == second.id
     assert updated_context.active_course_name == second.name
     assert sum(course.is_active for course in service.list_courses()) == 1
+    assert materials.get(first_material.id).status is MaterialStatus.ARCHIVED
+    assert materials.get(second_material.id).status is MaterialStatus.CURRENT
 
 
 def test_activating_unknown_course_preserves_the_current_course(tmp_path: Path) -> None:

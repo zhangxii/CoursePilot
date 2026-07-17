@@ -83,14 +83,14 @@ class MaterialIngestionService:
         parser = self._parser_for(path.name)
         pages = parser.parse(path)
         markdown = self._renderer.render(metadata.course_name, pages, material_type)
+        material = existing or self._repository.reserve(
+            metadata, file_name=path.name, file_hash=file_hash
+        )
         prepared = PreparedDocument(
             file_name=f"{path.stem}.md",
             markdown=markdown,
             file_hash=file_hash,
-            metadata=metadata,
-        )
-        material = existing or self._repository.reserve(
-            metadata, file_name=path.name, file_hash=file_hash
+            metadata=metadata.model_copy(update={"status": material.status}),
         )
         if material.remote_file_id is not None:
             try:

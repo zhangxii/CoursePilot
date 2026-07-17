@@ -32,6 +32,11 @@ class MaterialRepository:
         material_id = str(uuid4())
         try:
             with connect_database(self._database_path) as connection:
+                course = connection.execute(
+                    "SELECT status FROM courses WHERE id = ?", (metadata.course_id,)
+                ).fetchone()
+                if course is None:
+                    raise KeyError(metadata.course_id)
                 connection.execute(
                     """
                     INSERT INTO materials (
@@ -44,7 +49,7 @@ class MaterialRepository:
                         file_name,
                         file_hash,
                         metadata.material_type.value,
-                        metadata.status.value,
+                        course[0],
                     ),
                 )
         except sqlite3.IntegrityError:

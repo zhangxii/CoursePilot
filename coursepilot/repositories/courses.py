@@ -76,6 +76,10 @@ class CourseRepository:
                 raise KeyError(course_id)
             connection.execute("UPDATE courses SET status = 'archived' WHERE status = 'current'")
             connection.execute("UPDATE courses SET status = 'current' WHERE id = ?", (course_id,))
+            connection.execute("UPDATE materials SET status = 'archived'")
+            connection.execute(
+                "UPDATE materials SET status = 'current' WHERE course_id = ?", (course_id,)
+            )
         return self.get(course_id)
 
     @staticmethod
