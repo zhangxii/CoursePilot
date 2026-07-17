@@ -1,0 +1,169 @@
+# CoursePilot 架构设计
+
+## 1. 架构目标
+
+架构围绕三个核心原则：主 Agent 保留控制权；当前课程优先、历史课程按需；会话记忆与业务记录分离。设计覆盖 `system-requirements.md` 中的 FR-001～FR-043 与 NFR-001～NFR-009。
+
+## 2. 技术基线
+
+| 层次 | 技术 |
+|---|---|
+| 运行环境 | Windows 11、Python 3.12 |
+| UI | Streamlit |
+| Agent 编排 | OpenAI Agents SDK |
+| 知识检索 | OpenAI Vector Store / File Search |
+| 会话与业务数据 | SQLite（逻辑隔离） |
+| 文件预处理 | PyMuPDF、python-pptx |
+| 数据契约 | Pydantic |
+| 可观测性 | Agents SDK Tracing + 应用日志 |
+
+## 3. 系统上下文
+
+```text
+学生小组
+  │ 自然语言、课程资料、唯一大作业共享答案
+  ▼
+CoursePilot
+  ├── OpenAI Agents/Model API：推理、工具选择、Tracing
+  ├── OpenAI Vector Store：课程资料语义检索
+  └── 本地 SQLite：会话与业务记录
+```
+
+系统信任边界外包含 OpenAI 服务；API Key、上传内容和返回结果均需经过配置、校验和错误处理。
+
+## 4. 逻辑架构
+
+```text
+┌──────────────── Streamlit Presentation ────────────────┐
+│ 小组信息 │ 唯一大作业 │ 课程选择 │ 导入 │ 对话/版本展示  │
+└────────────────────────┬───────────────────────────────┘
+                         ▼
+┌──────────────── Application / Orchestration ───────────┐
+│ Course Learning Main Agent                             │
+│ ├─ 意图与课程解析    ├─ 检索策略决策                  │
+│ ├─ 专业 Agent 调用   └─ 响应整合与业务保存            │
+│    ├─ Notes Agent      ├─ Assignment Agent             │
+│    ├─ Review Agent     └─ Revision Agent               │
+└──────────────┬──────────────────────┬───────────────────┘
+               ▼                      ▼
+┌──────────── Tools / Domain ───────┐ ┌──── Contracts ───┐
+│ Current Search │ Archive Search   │ │ Pydantic models  │
+│ Course/Assignment/Answer services │ │ validation       │
+│ Material ingestion and citation  │ └──────────────────┘
+└──────────────┬────────────────────┘
+               ▼
+┌──────────────── Infrastructure ─────────────────────────┐
+│ Vector Store │ SQLiteSession │ Business SQLite │ Trace │
+└─────────────────────────────────────────────────────────┘
+```
+
+依赖方向由外层适配器指向应用与领域接口；Agent 不直接拼接 SQL 或直接调用无过滤的 Vector Store API。
+
+## 5. Agent 编排设计
+
+采用“Agent 作为工具”而非 handoff。主 Agent 在整个 run 中持有 `CourseContext`，专业 Agent 仅完成边界明确的任务并返回结构化结果。
+
+```text
+用户请求
+  → 加载 CourseContext
+  → 主 Agent 判断意图与输入完整性
+  → 确定 active_course_id
+  → 调用一个或多个专业 Agent
+      → 默认 search_current_course
+      → 满足策略条件时 search_course_archive
+      → 返回 Pydantic 结果
+  → 主 Agent 整合结果
+  → 事务化保存唯一大作业的共享成果并更新上下文
+  → 返回用户 + 完成 trace
+```
+
+路由不是纯关键词匹配。主 Agent 需结合当前答案、最近评审和用户表述判断。例如“优化刚才答案”且存在最近评审时调用修改 Agent；没有评审时先调用评审 Agent，再调用修改 Agent。
+
+## 6. 检索架构与隔离策略
+
+系统只暴露两个语义明确的应用工具：
+
+```python
+search_current_course(query, context)   # 强制 course_id == active_course_id
+search_course_archive(query, reason, context)  # 强制排除当前课程且记录 reason
+```
+
+策略执行顺序：
+
+1. 验证当前课程存在。
+2. 使用当前课程过滤检索，默认最多 5 条。
+3. 判断当前证据是否足以覆盖任务要求。
+4. 仅在 FR-013 条件成立时发起历史检索。
+5. 合并时当前课程证据排序优先；冲突时标记并以当前课程为准。
+6. 输出 `SourceRef`，包含材料、课程、页码/章节和片段。
+
+此边界同时在工具实现和 Agent 指令中约束，避免仅依赖提示词。
+
+## 7. 数据与状态架构
+
+### 7.1 会话状态
+
+SQLiteSession 保存对话消息；运行上下文额外维护经过 Pydantic 校验的 `CourseContext`。它服务于代词解析和连续任务，不作为业务事实的唯一来源。
+
+### 7.2 业务数据
+
+业务 SQLite 保存一个小组、成员、唯一大作业、课程资料、共享答案、评审和修改。建议会话表与业务表使用独立数据库文件或至少独立 repository，避免生命周期和查询职责混淆。
+
+```text
+team(singleton) 1──* team_members
+team(singleton) 1──1 assignment(singleton)
+courses 1──* materials
+assignment(singleton) 1──* answers(shared versions)
+answers 1──* reviews
+answers 1──* revisions *──1 reviews
+revisions 1──1 answers(new shared version)
+```
+
+数据库通过固定单例键和唯一约束确保不能创建第二个小组或第二份作业。答案修改在一个事务中完成：插入 revision、插入新的共享 answer version、记录操作成员、更新上下文引用。远端向量文件上传采用本地状态 `pending → uploaded → indexed`，失败进入 `failed` 并保留错误原因供重试。
+
+## 8. 文件导入架构
+
+```text
+上传文件
+ → 类型/大小/重复校验
+ → 本地暂存
+ → PDF/PPTX 逐页抽取
+ → 生成带页码 Markdown
+ → 附加 MaterialMetadata
+ → 上传 Vector Store
+ → 保存远端映射与索引状态
+```
+
+预处理器实现统一接口，未来可增加 DOCX 或 OCR，不影响调用方。重复上传通过文件哈希和课程 ID 判断；同一文件内容更新时创建新的资料版本或替换远端映射。
+
+## 9. 可靠性、安全与可观测性
+
+- 对模型、检索、上传配置超时和有限重试；非幂等数据库写入不做盲目重试。
+- 所有业务写入使用事务；远端调用与本地事务采用显式状态而非跨系统分布式事务。
+- API Key 从环境变量/Streamlit secrets 读取并在日志中脱敏。
+- 上传只允许白名单扩展名，并配置大小上限和安全文件名。
+- 每个请求生成关联标识，trace 记录 Agent 路由、工具名称、过滤条件摘要、耗时和错误；不记录密钥和不必要的完整作业内容。
+
+## 10. 关键架构决策
+
+| 决策 | 选择 | 理由 | 未来演进触发点 |
+|---|---|---|---|
+| 编排框架 | OpenAI Agents SDK | 抽象少，直接练习 Agent、工具和 tracing | 需要断点恢复、人工审批、复杂状态图时评估 LangGraph |
+| Agent 协作 | Agent 作为工具 | 主 Agent 保留上下文和最终控制权 | 专业 Agent 需独立接管用户会话时评估 handoff |
+| 检索边界 | 两个受控工具 | 从实现层保证当前课程隔离 | 多租户时增加 tenant/user 过滤 |
+| 作业聚合 | 单小组 + 单例大作业 | 真实业务只有一份持续迭代的小组作业 | 出现多项目或多小组并行需求时再引入集合模型 |
+| 状态存储 | Session 与业务库分离 | 对话记忆和业务事实生命周期不同 | 多小组/部署时迁移服务端数据库 |
+| 文档索引 | 先转带页码 Markdown | 引用稳定、便于验证 | 图像内容重要时增加 OCR/多模态解析 |
+
+## 11. 需求映射
+
+| 架构区域 | 需求 |
+|---|---|
+| Streamlit Presentation | FR-040、FR-043 |
+| Main/Professional Agents | FR-020～FR-029、FR-041 |
+| Retrieval Policy & Tools | FR-010～FR-015、NFR-001～NFR-002 |
+| Team & Singleton Assignment | FR-007～FR-009、FR-030～FR-034 |
+| Material Ingestion | FR-002～FR-005 |
+| Session & Business Persistence | FR-030～FR-034、NFR-003 |
+| Trace & Logging | FR-042、NFR-008 |
+| 模块边界与配置 | NFR-004～NFR-007、NFR-009 |
