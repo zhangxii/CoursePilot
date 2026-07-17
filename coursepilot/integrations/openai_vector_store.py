@@ -6,7 +6,7 @@ from openai import AsyncOpenAI
 from openai.types import vector_store_search_params
 
 from coursepilot.ingestion import PreparedDocument, RemoteFileRef
-from coursepilot.models import IndexStatus, MaterialSearchAttributes
+from coursepilot.models import IndexStatus, MaterialSearchAttributes, MaterialStatus
 from coursepilot.retrieval import RemoteSearchHit
 from coursepilot.retrieval.search import SearchFilter
 
@@ -29,6 +29,20 @@ class OpenAIVectorStoreGateway:
         await self._client.vector_stores.files.delete(
             remote_file_id, vector_store_id=self._vector_store_id
         )
+
+    async def activate_course(self, course_id: str) -> None:
+        async for item in self._client.vector_stores.files.list(self._vector_store_id):
+            attributes = MaterialSearchAttributes.model_validate(item.attributes or {})
+            status = (
+                MaterialStatus.CURRENT
+                if attributes.course_id == course_id
+                else MaterialStatus.ARCHIVED
+            )
+            await self._client.vector_stores.files.update(
+                item.id,
+                vector_store_id=self._vector_store_id,
+                attributes=attributes.model_copy(update={"status": status}).model_dump(mode="json"),
+            )
 
     async def search(
         self, query: str, filters: SearchFilter, max_results: int
