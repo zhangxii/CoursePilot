@@ -295,10 +295,22 @@ def render(view: WorkspaceView, controller: AppController) -> None:
 
     materials, conversation, workspace = st.tabs(["课程资料", "Agent 对话", "唯一大作业"])
     with materials:
-        upload = st.file_uploader("上传 Markdown/纯文本", type=["md", "txt"])
+        active_course = view.active_course
+        if active_course is None:
+            st.info("请先在左侧创建课程；首门课程会自动成为当前课程。")
+        upload = st.file_uploader(
+            "上传 Markdown/纯文本",
+            type=["md", "txt"],
+            disabled=active_course is None,
+        )
         if upload is not None and st.button("保存到资料库"):
-            with st.status("正在保存 Markdown 资料"):
-                controller.upload_material(upload.name, upload.getvalue())
+            try:
+                with st.status("正在保存 Markdown 资料"):
+                    controller.upload_material(upload.name, upload.getvalue())
+                st.success("课程资料已保存。")
+                st.rerun()
+            except Exception as error:
+                st.error(f"资料保存失败：{type(error).__name__}: {error}")
         for material in view.materials:
             st.write(material.file_name, material.index_status.value)
     with conversation:
