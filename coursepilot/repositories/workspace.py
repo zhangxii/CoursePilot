@@ -1,10 +1,10 @@
-"""Persistence for the singleton team, assignment, and shared work products."""
+"""File-backed persistence for the singleton team and assignment lifecycle."""
 
-import json
+import threading
 from pathlib import Path
 from uuid import uuid4
 
-from coursepilot.database import connect_database
+from coursepilot.file_store import FileDataStore, dump_yaml, parse_front_matter, render_front_matter
 from coursepilot.models import (
     AnswerComparison,
     AnswerRecord,
@@ -21,204 +21,93 @@ from coursepilot.models import (
 
 
 class WorkspaceRepository:
-    def __init__(self, database_path: str | Path) -> None:
-        self._database_path = Path(database_path)
+    _lock = threading.RLock()
+
+    def __init__(self, data_root: str | Path) -> None:
+        self._store = FileDataStore(Path(data_root))
 
     def initialize_team(self, name: str, members: list[TeamMember]) -> Team:
-        with connect_database(self._database_path) as db:
-            if db.execute("SELECT 1 FROM teams").fetchone():
+        with self._lock:
+            if self._store.exists("workspace.yaml"):
                 raise ValueError("only one team is supported")
-            db.execute("INSERT INTO teams (id,name) VALUES ('main_team',?)", (name,))
-            db.executemany(
-                "INSERT INTO team_members (id,team_id,name,role) VALUES (?,'main_team',?,?)",
-                [(member.id, member.name, member.role) for member in members],
-            )
-        return self.get_team()
-
-    def apply_agent_output(self, course_id: str, output: MainAgentResult, member_id: str) -> None:
-        """Persist one agent result atomically across all affected business tables."""
-        note_id, answer_id, review_id, revision_id = (str(uuid4()) for _ in range(4))
-        with connect_database(self._database_path) as db:
-            if output.notes_output is not None:
-                db.execute(
-                    "INSERT INTO course_notes (id,course_id,result_json) VALUES (?,?,?)",
-                    (note_id, course_id, output.notes_output.model_dump_json()),
-                )
-            latest = db.execute(
-                "SELECT id,version FROM answers ORDER BY version DESC LIMIT 1"
-            ).fetchone()
-            if output.assignment_output is not None:
-                version = 1 if latest is None else latest[1] + 1
-                db.execute(
-                    "INSERT INTO answers (id,assignment_id,version,content,operated_by_member_id) "
-                    "VALUES (?,'main_assignment',?,?,?)",
-                    (answer_id, version, output.assignment_output.shared_answer, member_id),
-                )
-                latest = (answer_id, version)
-            if output.review_output is not None:
-                if latest is None:
-                    raise ValueError("review requires a shared answer")
-                db.execute(
-                    "INSERT INTO reviews (id,answer_id,result_json,total_score) VALUES (?,?,?,?)",
-                    (
-                        review_id,
-                        latest[0],
-                        output.review_output.model_dump_json(),
-                        output.review_output.total_score,
-                    ),
-                )
-            if output.revision_output is not None:
-                if latest is None:
-                    raise ValueError("revision requires a shared answer")
-                review_row = db.execute(
-                    "SELECT id FROM reviews WHERE answer_id=? "
-                    "ORDER BY created_at DESC,id DESC LIMIT 1",
-                    (latest[0],),
-                ).fetchone()
-                if review_row is None:
-                    raise ValueError("revision requires a review for the current answer")
-                result_answer_id = str(uuid4())
-                db.execute(
-                    "INSERT INTO answers (id,assignment_id,version,content,operated_by_member_id) "
-                    "VALUES (?,'main_assignment',?,?,?)",
-                    (
-                        result_answer_id,
-                        latest[1] + 1,
-                        output.revision_output.revised_answer,
-                        member_id,
-                    ),
-                )
-                db.execute(
-                    "INSERT INTO revisions (id,source_answer_id,review_id,result_answer_id,mode,"
-                    "change_summary,operated_by_member_id,unresolved_issues_json) "
-                    "VALUES (?,?,?,?,?,?,?,?)",
-                    (
-                        revision_id,
-                        latest[0],
-                        review_row[0],
-                        result_answer_id,
-                        output.revision_output.mode.value,
-                        "；".join(output.revision_output.changes),
-                        member_id,
-                        json.dumps(output.revision_output.unresolved_issues, ensure_ascii=False),
-                    ),
-                )
-
-    def save_notes(self, course_id: str, result: NotesResult) -> str:
-        note_id = str(uuid4())
-        with connect_database(self._database_path) as db:
-            db.execute(
-                "INSERT INTO course_notes (id,course_id,result_json) VALUES (?,?,?)",
-                (note_id, course_id, result.model_dump_json()),
-            )
-        return note_id
-
-    def get_notes(self, note_id: str) -> NotesResult:
-        with connect_database(self._database_path) as db:
-            row = db.execute(
-                "SELECT result_json FROM course_notes WHERE id=?", (note_id,)
-            ).fetchone()
-        if row is None:
-            raise KeyError(note_id)
-        return NotesResult.model_validate(json.loads(row[0]))
+            team = Team(name=name, members=members)
+            self._store.write_yaml("workspace.yaml", team.model_dump(mode="json"))
+            return team
 
     def get_team(self) -> Team:
-        with connect_database(self._database_path) as db:
-            team = db.execute("SELECT name FROM teams WHERE id='main_team'").fetchone()
-            members = db.execute(
-                "SELECT id,name,role FROM team_members WHERE team_id='main_team' ORDER BY id"
-            ).fetchall()
-        if team is None:
+        data = self._store.read_yaml("workspace.yaml")
+        if data is None:
             raise KeyError("main_team")
-        return Team(
-            name=team[0],
-            members=[TeamMember(id=row[0], name=row[1], role=row[2]) for row in members],
-        )
+        return Team.model_validate(data)
 
     def initialize_assignment(
         self, title: str, requirements: str, rubric: str | None
     ) -> Assignment:
-        with connect_database(self._database_path) as db:
-            if db.execute("SELECT 1 FROM assignment").fetchone():
+        with self._lock:
+            if self._store.exists("assignment/assignment.md"):
                 raise ValueError("only one assignment is supported")
-            db.execute(
-                "INSERT INTO assignment (id,team_id,title,requirements,rubric) "
-                "VALUES ('main_assignment','main_team',?,?,?)",
-                (title, requirements, rubric),
-            )
-        return self.get_assignment()
+            assignment = Assignment(title=title, requirements=requirements, rubric=rubric)
+            self._write_assignment(assignment)
+            return assignment
 
     def get_assignment(self) -> Assignment:
-        with connect_database(self._database_path) as db:
-            row = db.execute(
-                "SELECT title,requirements,rubric FROM assignment WHERE id='main_assignment'"
-            ).fetchone()
-        if row is None:
+        if not self._store.exists("assignment/assignment.md"):
             raise KeyError("main_assignment")
-        return Assignment(title=row[0], requirements=row[1], rubric=row[2])
+        metadata, body = parse_front_matter(self._store.read_text("assignment/assignment.md"))
+        return Assignment(
+            title=metadata["title"], requirements=body.strip(), rubric=metadata.get("rubric")
+        )
 
     def update_assignment(self, title: str, requirements: str, rubric: str | None) -> Assignment:
-        with connect_database(self._database_path) as db:
-            cursor = db.execute(
-                "UPDATE assignment SET title=?,requirements=?,rubric=?,"
-                "updated_at=CURRENT_TIMESTAMP "
-                "WHERE id='main_assignment'",
-                (title, requirements, rubric),
-            )
-            if cursor.rowcount != 1:
-                raise KeyError("main_assignment")
-        return self.get_assignment()
+        self.get_assignment()
+        assignment = Assignment(title=title, requirements=requirements, rubric=rubric)
+        self._write_assignment(assignment)
+        return assignment
 
     def add_answer(self, content: str, member_id: str) -> AnswerRecord:
-        answer_id = str(uuid4())
-        with connect_database(self._database_path) as db:
-            version = db.execute(
-                "SELECT COALESCE(MAX(version),0)+1 FROM answers "
-                "WHERE assignment_id='main_assignment'"
-            ).fetchone()[0]
-            db.execute(
-                "INSERT INTO answers (id,assignment_id,version,content,operated_by_member_id) "
-                "VALUES (?,'main_assignment',?,?,?)",
-                (answer_id, version, content, member_id),
-            )
-        return self.get_answer(answer_id)
+        with self._lock:
+            latest = self.latest_answer()
+            version = 1 if latest is None else latest.version + 1
+            answer, document = self._new_answer(content, member_id, version)
+            self._store.write_text(self._answer_path(version), document)
+            return answer
 
     def get_answer(self, answer_id: str) -> AnswerRecord:
-        with connect_database(self._database_path) as db:
-            row = db.execute(
-                "SELECT id,version,content,operated_by_member_id FROM answers WHERE id=?",
-                (answer_id,),
-            ).fetchone()
-        if row is None:
-            raise KeyError(answer_id)
-        return AnswerRecord(id=row[0], version=row[1], content=row[2], operated_by_member_id=row[3])
+        for path in self._store.glob("assignment/answers/*.md"):
+            metadata, body = parse_front_matter(path.read_text(encoding="utf-8"))
+            if metadata.get("id") == answer_id:
+                return AnswerRecord(
+                    id=answer_id,
+                    version=metadata["version"],
+                    content=body.strip(),
+                    operated_by_member_id=metadata["operated_by_member_id"],
+                )
+        raise KeyError(answer_id)
 
     def latest_answer(self) -> AnswerRecord | None:
-        with connect_database(self._database_path) as db:
-            row = db.execute("SELECT id FROM answers ORDER BY version DESC LIMIT 1").fetchone()
-        return None if row is None else self.get_answer(row[0])
+        paths = self._store.glob("assignment/answers/*.md")
+        if not paths:
+            return None
+        metadata, _ = parse_front_matter(paths[-1].read_text(encoding="utf-8"))
+        return self.get_answer(str(metadata["id"]))
 
     def add_review(self, answer_id: str, result: ReviewResult) -> ReviewRecord:
-        review_id = str(uuid4())
-        with connect_database(self._database_path) as db:
-            db.execute(
-                "INSERT INTO reviews (id,answer_id,result_json,total_score) VALUES (?,?,?,?)",
-                (review_id, answer_id, result.model_dump_json(), result.total_score),
-            )
-        return ReviewRecord(id=review_id, answer_id=answer_id, result=result)
+        self.get_answer(answer_id)
+        review = ReviewRecord(id=str(uuid4()), answer_id=answer_id, result=result)
+        self._store.write_yaml(
+            f"assignment/reviews/{review.id}.yaml", review.model_dump(mode="json")
+        )
+        return review
 
     def latest_review(self, answer_id: str) -> ReviewRecord | None:
-        with connect_database(self._database_path) as db:
-            row = db.execute(
-                "SELECT id,result_json FROM reviews WHERE answer_id=? "
-                "ORDER BY created_at DESC,id DESC LIMIT 1",
-                (answer_id,),
-            ).fetchone()
-        if row is None:
-            return None
-        return ReviewRecord(
-            id=row[0], answer_id=answer_id, result=ReviewResult.model_validate(json.loads(row[1]))
-        )
+        matches = []
+        for path in self._store.glob("assignment/reviews/*.yaml"):
+            review = ReviewRecord.model_validate(
+                self._store.read_yaml(path.relative_to(self._store.root))
+            )
+            if review.answer_id == answer_id:
+                matches.append((path.stat().st_mtime_ns, review))
+        return None if not matches else max(matches, key=lambda item: item[0])[1]
 
     def revise(
         self,
@@ -230,69 +119,154 @@ class WorkspaceRepository:
         summary: str,
         unresolved_issues: list[str] | None = None,
     ) -> tuple[AnswerRecord, RevisionRecord]:
-        answer_id, revision_id = str(uuid4()), str(uuid4())
-        revision = RevisionRecord(
-            id=revision_id,
-            source_answer_id=source.id,
-            review_id=review.id,
-            result_answer_id=answer_id,
-            mode=mode,
-            change_summary=summary,
-            unresolved_issues=unresolved_issues or [],
+        with self._lock:
+            current = self.latest_answer()
+            if current is None or current.id != source.id:
+                raise ValueError("revision source must be the latest answer")
+            if review.answer_id != source.id:
+                raise ValueError("revision requires a review of its source answer")
+            persisted_review = self.latest_review(source.id)
+            if persisted_review is None or persisted_review.id != review.id:
+                raise ValueError("revision review is not persisted for its source answer")
+            if not summary.strip():
+                raise ValueError("revision summary must not be blank")
+            answer, answer_document = self._new_answer(content, member_id, source.version + 1)
+            revision = RevisionRecord(
+                id=str(uuid4()),
+                source_answer_id=source.id,
+                review_id=review.id,
+                result_answer_id=answer.id,
+                mode=mode,
+                change_summary=summary,
+                unresolved_issues=unresolved_issues or [],
+            )
+            self._store.write_batch(
+                {
+                    self._answer_path(answer.version): answer_document,
+                    f"assignment/revisions/{answer.version:04d}.yaml": dump_yaml(
+                        revision.model_dump(mode="json")
+                    ),
+                }
+            )
+            return answer, revision
+
+    def latest_revision(self) -> RevisionRecord | None:
+        paths = self._store.glob("assignment/revisions/*.yaml")
+        return (
+            None
+            if not paths
+            else RevisionRecord.model_validate(
+                self._store.read_yaml(paths[-1].relative_to(self._store.root))
+            )
         )
-        with connect_database(self._database_path) as db:
-            db.execute(
-                "INSERT INTO answers (id,assignment_id,version,content,operated_by_member_id) "
-                "VALUES (?,'main_assignment',?,?,?)",
-                (answer_id, source.version + 1, content, member_id),
-            )
-            db.execute(
-                "INSERT INTO revisions (id,source_answer_id,review_id,result_answer_id,mode,"
-                "change_summary,operated_by_member_id,unresolved_issues_json) "
-                "VALUES (?,?,?,?,?,?,?,?)",
-                (
-                    revision_id,
-                    source.id,
-                    review.id,
-                    answer_id,
-                    mode.value,
-                    summary,
-                    member_id,
-                    json.dumps(unresolved_issues or [], ensure_ascii=False),
-                ),
-            )
-        return self.get_answer(answer_id), revision
 
     def compare_revision(self, revision: RevisionRecord) -> AnswerComparison:
         source = self.get_answer(revision.source_answer_id)
         result = self.get_answer(revision.result_answer_id)
         review = self.latest_review(source.id)
         critical = [] if review is None else review.result.critical_issues
-        unresolved = [issue for issue in critical if issue in revision.unresolved_issues]
+        unresolved = [item for item in critical if item in revision.unresolved_issues]
         return AnswerComparison(
             source_version=source.version,
             result_version=result.version,
             operated_by_member_id=result.operated_by_member_id,
             change_summary=revision.change_summary,
-            resolved_issues=[issue for issue in critical if issue not in unresolved],
+            resolved_issues=[item for item in critical if item not in unresolved],
             unresolved_issues=unresolved,
         )
 
-    def latest_revision(self) -> RevisionRecord | None:
-        with connect_database(self._database_path) as db:
-            row = db.execute(
-                "SELECT id,source_answer_id,review_id,result_answer_id,mode,change_summary,"
-                "unresolved_issues_json "
-                "FROM revisions ORDER BY created_at DESC,id DESC LIMIT 1"
-            ).fetchone()
-        if row is None:
-            return None
-        return RevisionRecord(
-            id=row[0],
-            source_answer_id=row[1],
-            review_id=row[2],
-            result_answer_id=row[3],
-            mode=RevisionMode(row[4]),
-            change_summary=row[5],
-            unresolved_issues=json.loads(row[6]),
+    def save_notes(self, course_id: str, result: NotesResult) -> str:
+        note_id = str(uuid4())
+        self._store.write_yaml(
+            f"courses/{course_id}/notes/{note_id}.yaml", result.model_dump(mode="json")
         )
+        return note_id
+
+    def get_notes(self, note_id: str) -> NotesResult:
+        matches = self._store.glob(f"courses/*/notes/{note_id}.yaml")
+        if not matches:
+            raise KeyError(note_id)
+        return NotesResult.model_validate(
+            self._store.read_yaml(matches[0].relative_to(self._store.root))
+        )
+
+    def apply_agent_output(self, course_id: str, output: MainAgentResult, member_id: str) -> None:
+        with self._lock:
+            documents: dict[str, str] = {}
+            latest = self.latest_answer()
+            if output.notes_output is not None:
+                note_id = str(uuid4())
+                documents[f"courses/{course_id}/notes/{note_id}.yaml"] = dump_yaml(
+                    output.notes_output.model_dump(mode="json")
+                )
+            if output.assignment_output is not None:
+                version = 1 if latest is None else latest.version + 1
+                latest, answer_document = self._new_answer(
+                    output.assignment_output.shared_answer, member_id, version
+                )
+                documents[self._answer_path(version)] = answer_document
+            review: ReviewRecord | None
+            if output.review_output is not None:
+                if latest is None:
+                    raise ValueError("review requires a shared answer")
+                review = ReviewRecord(
+                    id=str(uuid4()), answer_id=latest.id, result=output.review_output
+                )
+                documents[f"assignment/reviews/{review.id}.yaml"] = dump_yaml(
+                    review.model_dump(mode="json")
+                )
+            else:
+                review = None if latest is None else self.latest_review(latest.id)
+            if output.revision_output is not None:
+                if latest is None or review is None:
+                    raise ValueError("revision requires a review for the current answer")
+                revised, revised_document = self._new_answer(
+                    output.revision_output.revised_answer,
+                    member_id,
+                    latest.version + 1,
+                )
+                revision = RevisionRecord(
+                    id=str(uuid4()),
+                    source_answer_id=latest.id,
+                    review_id=review.id,
+                    result_answer_id=revised.id,
+                    mode=output.revision_output.mode,
+                    change_summary="；".join(output.revision_output.changes),
+                    unresolved_issues=output.revision_output.unresolved_issues,
+                )
+                documents[self._answer_path(revised.version)] = revised_document
+                documents[f"assignment/revisions/{revised.version:04d}.yaml"] = dump_yaml(
+                    revision.model_dump(mode="json")
+                )
+            self._store.write_batch(documents)
+
+    def _write_assignment(self, assignment: Assignment) -> None:
+        self._store.write_text(
+            "assignment/assignment.md",
+            render_front_matter(
+                {"id": assignment.id, "title": assignment.title, "rubric": assignment.rubric},
+                assignment.requirements,
+            ),
+        )
+
+    @staticmethod
+    def _new_answer(content: str, member_id: str, version: int) -> tuple[AnswerRecord, str]:
+        answer = AnswerRecord(
+            id=str(uuid4()),
+            version=version,
+            content=content,
+            operated_by_member_id=member_id,
+        )
+        document = render_front_matter(
+            {
+                "id": answer.id,
+                "version": answer.version,
+                "operated_by_member_id": member_id,
+            },
+            content,
+        )
+        return answer, document
+
+    @staticmethod
+    def _answer_path(version: int) -> str:
+        return f"assignment/answers/{version:04d}.md"

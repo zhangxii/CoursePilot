@@ -1,11 +1,16 @@
 """Testable main-agent orchestration with specialist agents kept as tools."""
 
+import json
+import re
+import threading
 from pathlib import Path
 from typing import Any, Protocol
 
-from agents import Agent, Runner, SQLiteSession
-from pydantic import BaseModel, ConfigDict
+from agents import Agent, Runner
+from agents.memory.session_settings import SessionSettings
+from pydantic import BaseModel, ConfigDict, TypeAdapter
 
+from coursepilot.file_store import FileDataStore
 from coursepilot.models import (
     AgentKind,
     AssignmentResult,
@@ -118,12 +123,61 @@ def _classify_fallback(message: str) -> AgentKind:
     raise UnknownIntentError("无法可靠识别任务，请说明要总结、完成、评审还是修改")
 
 
-class SqliteAgentRuntime:
-    def __init__(self, database_path: str | Path) -> None:
-        self._database_path = str(database_path)
+class JsonlSession:
+    session_settings: SessionSettings | None = None
+    _lock = threading.RLock()
+    _item_adapter = TypeAdapter(dict[str, Any])
 
-    def session(self, session_id: str) -> SQLiteSession:
-        return SQLiteSession(session_id, self._database_path)
+    def __init__(self, session_id: str, data_root: str | Path) -> None:
+        if not re.fullmatch(r"[A-Za-z0-9_-]+", session_id):
+            raise ValueError("session_id contains unsafe characters")
+        self.session_id = session_id
+        self._store = FileDataStore(Path(data_root))
+        self._relative = f"sessions/{session_id}.jsonl"
+
+    async def get_items(self, limit: int | None = None) -> list[Any]:
+        items = self._read()
+        if limit is None:
+            return items
+        return [] if limit <= 0 else items[-limit:]
+
+    async def add_items(self, items: list[Any]) -> None:
+        with self._lock:
+            self._write([*self._read(), *items])
+
+    async def pop_item(self) -> Any | None:
+        with self._lock:
+            items = self._read()
+            if not items:
+                return None
+            item = items.pop()
+            self._write(items)
+            return item
+
+    async def clear_session(self) -> None:
+        with self._lock:
+            self._write([])
+
+    def _read(self) -> list[Any]:
+        if not self._store.exists(self._relative):
+            return []
+        return [
+            self._item_adapter.validate_python(json.loads(line))
+            for line in self._store.read_text(self._relative).splitlines()
+        ]
+
+    def _write(self, items: list[Any]) -> None:
+        validated = [self._item_adapter.validate_python(item) for item in items]
+        content = "".join(json.dumps(item, ensure_ascii=False) + "\n" for item in validated)
+        self._store.write_text(self._relative, content)
+
+
+class FileAgentRuntime:
+    def __init__(self, data_root: str | Path) -> None:
+        self._data_root = Path(data_root)
+
+    def session(self, session_id: str) -> JsonlSession:
+        return JsonlSession(session_id, self._data_root)
 
     async def run(
         self,

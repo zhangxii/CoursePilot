@@ -3,7 +3,6 @@ from pathlib import Path
 
 import pytest
 
-from coursepilot.database import initialize_database
 from coursepilot.models import CourseContext, MaterialMetadata, MaterialStatus, MaterialType
 from coursepilot.repositories import CourseRepository, MaterialRepository
 from coursepilot.services import CourseNotFoundError, CourseService
@@ -12,9 +11,8 @@ from coursepilot.services import CourseNotFoundError, CourseService
 def test_course_service_creates_lists_and_switches_the_single_active_course(
     tmp_path: Path,
 ) -> None:
-    database = tmp_path / "coursepilot.db"
-    initialize_database(database)
-    service = CourseService(CourseRepository(database))
+    data_root = tmp_path / "data"
+    service = CourseService(CourseRepository(data_root))
 
     first = service.create(
         course_id="requirements-20260701",
@@ -30,8 +28,8 @@ def test_course_service_creates_lists_and_switches_the_single_active_course(
         teacher="刘飞",
         topic="架构设计",
     )
-    materials = MaterialRepository(database)
-    first_material = materials.reserve(
+    materials = MaterialRepository(data_root)
+    first_material = materials.add(
         MaterialMetadata(
             course_id=first.id,
             course_name=first.name,
@@ -43,8 +41,9 @@ def test_course_service_creates_lists_and_switches_the_single_active_course(
         ),
         file_name="requirements.md",
         file_hash="requirements-hash",
+        body="# Requirements",
     )
-    second_material = materials.reserve(
+    second_material = materials.add(
         MaterialMetadata(
             course_id=second.id,
             course_name=second.name,
@@ -56,6 +55,7 @@ def test_course_service_creates_lists_and_switches_the_single_active_course(
         ),
         file_name="architecture.md",
         file_hash="architecture-hash",
+        body="# Architecture",
     )
 
     assert first_material.status is MaterialStatus.CURRENT
@@ -83,9 +83,8 @@ def test_course_service_creates_lists_and_switches_the_single_active_course(
 
 
 def test_activating_unknown_course_preserves_the_current_course(tmp_path: Path) -> None:
-    database = tmp_path / "coursepilot.db"
-    initialize_database(database)
-    service = CourseService(CourseRepository(database))
+    data_root = tmp_path / "data"
+    service = CourseService(CourseRepository(data_root))
     active = service.create(
         course_id="requirements-20260701",
         name="系统需求",

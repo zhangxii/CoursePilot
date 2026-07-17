@@ -1,4 +1,4 @@
-"""CoursePilot command-line bootstrap for configuration and database setup."""
+"""CoursePilot command-line configuration check."""
 
 import argparse
 import sys
@@ -7,15 +7,14 @@ from collections.abc import Sequence
 from pydantic import ValidationError
 
 from coursepilot.config import load_settings
-from coursepilot.database import initialize_database
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="coursepilot")
     parser.add_argument(
         "command",
-        choices=("check-config", "init-db"),
-        help="validate configuration or initialize the business database",
+        choices=("check-config",),
+        help="validate configuration",
     )
     return parser
 
@@ -36,12 +35,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             "Configuration valid: "
             f"model={settings.model_name}, "
             f"llm_base_url={settings.llm_base_url or 'OpenAI default'}, "
-            f"database={settings.database_path}"
+            f"data_path={settings.data_path}"
         )
         return 0
 
-    database_path = initialize_database(settings.database_path)
-    print(f"Database initialized: {database_path}")
     return 0
 
 

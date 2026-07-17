@@ -26,7 +26,7 @@ class Settings(BaseSettings):
     llm_api_key: SecretStr
     llm_base_url: str | None = None
     model_name: Annotated[str, Field(min_length=1)] = "gpt-5-mini"
-    database_path: Path = Path("data/coursepilot.db")
+    data_path: Path = Path("data")
     max_upload_mb: PositiveInt = 50
     max_search_results: PositiveInt = 5
     full_context_chars: PositiveInt = 60_000

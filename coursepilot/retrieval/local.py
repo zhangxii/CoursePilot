@@ -1,9 +1,7 @@
 """Local full-context and keyword retrieval adapter."""
 
 import re
-from pathlib import Path
 
-from coursepilot.material_store import MaterialFileStore
 from coursepilot.models import LocalMaterialDocument, MaterialSearchAttributes
 from coursepilot.repositories import MaterialRepository
 from coursepilot.retrieval.search import (
@@ -20,13 +18,11 @@ class LocalMaterialSearchGateway:
         self,
         repository: MaterialRepository,
         *,
-        material_root: Path,
         full_context_chars: int = 60_000,
     ) -> None:
         if full_context_chars <= 0:
             raise ValueError("full_context_chars must be positive")
         self._repository = repository
-        self._store = MaterialFileStore(material_root)
         self._full_context_chars = full_context_chars
 
     async def search(
@@ -38,7 +34,7 @@ class LocalMaterialSearchGateway:
             if _matches(document.material.course_id, document.material.status.value, filters)
         ]
         contents = [
-            (document, self._store.read(document.material.storage_path)) for document in documents
+            (document, self._repository.read_body(document.material)) for document in documents
         ]
         total_chars = sum(len(markdown) for _, markdown in contents)
         if total_chars <= self._full_context_chars:

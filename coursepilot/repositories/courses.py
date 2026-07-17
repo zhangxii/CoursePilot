@@ -1,17 +1,28 @@
-"""SQLite-backed course repository."""
+"""YAML-backed course repository."""
 
+import re
+import threading
 from datetime import date
 from pathlib import Path
 
-from coursepilot.database import connect_database
+from pydantic import BaseModel, ConfigDict
+
+from coursepilot.file_store import FileDataStore, dump_yaml
 from coursepilot.models import Course
 
 
-class CourseRepository:
-    """Persist and atomically activate courses."""
+class CourseIndex(BaseModel):
+    model_config = ConfigDict(extra="forbid")
 
-    def __init__(self, database_path: str | Path) -> None:
-        self._database_path = Path(database_path)
+    active_course_id: str | None
+    course_ids: list[str]
+
+
+class CourseRepository:
+    _lock = threading.RLock()
+
+    def __init__(self, data_root: str | Path) -> None:
+        self._store = FileDataStore(Path(data_root))
 
     def add(
         self,
@@ -23,72 +34,75 @@ class CourseRepository:
         topic: str,
         active: bool,
     ) -> Course:
-        status = "current" if active else "archived"
-        with connect_database(self._database_path) as connection:
-            connection.execute(
-                """
-                INSERT INTO courses (id, name, course_date, teacher, topic, status)
-                VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                (course_id, name, course_date.isoformat(), teacher, topic, status),
+        if not re.fullmatch(r"[A-Za-z0-9_-]+", course_id):
+            raise ValueError("course_id may contain only letters, numbers, underscore and hyphen")
+        course = Course(
+            id=course_id,
+            name=name,
+            course_date=course_date,
+            teacher=teacher,
+            topic=topic,
+            is_active=active,
+        )
+        with self._lock:
+            path = self._course_path(course_id)
+            if self._store.exists(path):
+                raise ValueError(f"course already exists: {course_id}")
+            course_data = {
+                "id": course.id,
+                "name": course.name,
+                "course_date": course.course_date.isoformat(),
+                "teacher": course.teacher,
+                "topic": course.topic,
+            }
+            index = self._index()
+            index.course_ids.append(course_id)
+            if active or index.active_course_id is None:
+                index.active_course_id = course_id
+            self._store.write_batch(
+                {
+                    path: dump_yaml(course_data),
+                    "courses/course-index.yaml": dump_yaml(index.model_dump(mode="json")),
+                }
             )
         return self.get(course_id)
 
     def get(self, course_id: str) -> Course:
-        with connect_database(self._database_path) as connection:
-            row = connection.execute(
-                """
-                SELECT id, name, course_date, teacher, topic, status
-                FROM courses WHERE id = ?
-                """,
-                (course_id,),
-            ).fetchone()
-        if row is None:
+        data = self._store.read_yaml(self._course_path(course_id))
+        if data is None:
             raise KeyError(course_id)
-        return self._to_model(row)
+        return Course(
+            id=data["id"],
+            name=data["name"],
+            course_date=data["course_date"],
+            teacher=data["teacher"],
+            topic=data["topic"],
+            is_active=self._index().active_course_id == course_id,
+        )
 
     def list(self) -> list[Course]:
-        with connect_database(self._database_path) as connection:
-            rows = connection.execute(
-                """
-                SELECT id, name, course_date, teacher, topic, status
-                FROM courses ORDER BY course_date DESC, id
-                """
-            ).fetchall()
-        return [self._to_model(row) for row in rows]
+        courses = [self.get(course_id) for course_id in self._index().course_ids]
+        return sorted(courses, key=lambda item: (item.course_date, item.id), reverse=True)
 
     def get_active(self) -> Course | None:
-        with connect_database(self._database_path) as connection:
-            row = connection.execute(
-                """
-                SELECT id, name, course_date, teacher, topic, status
-                FROM courses WHERE status = 'current'
-                """
-            ).fetchone()
-        return None if row is None else self._to_model(row)
+        active = self._index().active_course_id
+        return None if active is None else self.get(active)
 
     def activate(self, course_id: str) -> Course:
-        with connect_database(self._database_path) as connection:
-            exists = connection.execute(
-                "SELECT 1 FROM courses WHERE id = ?", (course_id,)
-            ).fetchone()
-            if exists is None:
-                raise KeyError(course_id)
-            connection.execute("UPDATE courses SET status = 'archived' WHERE status = 'current'")
-            connection.execute("UPDATE courses SET status = 'current' WHERE id = ?", (course_id,))
-            connection.execute("UPDATE materials SET status = 'archived'")
-            connection.execute(
-                "UPDATE materials SET status = 'current' WHERE course_id = ?", (course_id,)
-            )
+        with self._lock:
+            self.get(course_id)
+            index = self._index()
+            index.active_course_id = course_id
+            self._store.write_yaml("courses/course-index.yaml", index.model_dump(mode="json"))
         return self.get(course_id)
 
-    @staticmethod
-    def _to_model(row: tuple[str, str, str, str, str, str]) -> Course:
-        return Course(
-            id=row[0],
-            name=row[1],
-            course_date=date.fromisoformat(row[2]),
-            teacher=row[3],
-            topic=row[4],
-            is_active=row[5] == "current",
+    def _index(self) -> CourseIndex:
+        data = self._store.read_yaml(
+            "courses/course-index.yaml",
+            {"active_course_id": None, "course_ids": []},
         )
+        return CourseIndex.model_validate(data)
+
+    @staticmethod
+    def _course_path(course_id: str) -> str:
+        return f"courses/{course_id}/course.yaml"

@@ -3,7 +3,6 @@ from pathlib import Path
 
 import pytest
 
-from coursepilot.database import initialize_database
 from coursepilot.models import (
     AgentKind,
     AssignmentResult,
@@ -50,9 +49,8 @@ def review() -> ReviewResult:
 
 
 def test_single_workspace_versions_review_and_revision_survive_restart(tmp_path: Path) -> None:
-    database = tmp_path / "business.db"
-    initialize_database(database)
-    service = WorkspaceService(WorkspaceRepository(database))
+    data_root = tmp_path / "data"
+    service = WorkspaceService(WorkspaceRepository(data_root))
     service.initialize_team("Architecture Group", [TeamMember(id="alice", name="Alice")])
     service.initialize_assignment("CoursePilot", "Design and implement the system", "100 points")
     first = service.save_answer("Version one", "alice")
@@ -66,7 +64,7 @@ def test_single_workspace_versions_review_and_revision_survive_restart(tmp_path:
         "Added alternatives",
     )
 
-    restored = WorkspaceService(WorkspaceRepository(database))
+    restored = WorkspaceService(WorkspaceRepository(data_root))
     course = Course(
         id="architecture",
         name="Architecture",
@@ -88,9 +86,8 @@ def test_single_workspace_versions_review_and_revision_survive_restart(tmp_path:
 
 
 def test_invalid_revision_rolls_back_answer_and_revision_together(tmp_path: Path) -> None:
-    database = tmp_path / "business.db"
-    initialize_database(database)
-    service = WorkspaceService(WorkspaceRepository(database))
+    data_root = tmp_path / "data"
+    service = WorkspaceService(WorkspaceRepository(data_root))
     service.initialize_team("Group", [TeamMember(id="alice", name="Alice")])
     service.initialize_assignment("Only", "Do it")
     first = service.save_answer("Draft", "alice")
@@ -122,9 +119,8 @@ def test_invalid_revision_rolls_back_answer_and_revision_together(tmp_path: Path
 
 
 def test_second_team_and_assignment_are_rejected(tmp_path: Path) -> None:
-    database = tmp_path / "business.db"
-    initialize_database(database)
-    service = WorkspaceService(WorkspaceRepository(database))
+    data_root = tmp_path / "data"
+    service = WorkspaceService(WorkspaceRepository(data_root))
     service.initialize_team("One", [TeamMember(id="alice", name="Alice")])
     service.initialize_assignment("Only assignment", "Do it")
 
@@ -135,9 +131,8 @@ def test_second_team_and_assignment_are_rejected(tmp_path: Path) -> None:
 
 
 def test_agent_outputs_are_persisted_as_shared_reviewed_revision(tmp_path: Path) -> None:
-    database = tmp_path / "business.db"
-    initialize_database(database)
-    service = WorkspaceService(WorkspaceRepository(database))
+    data_root = tmp_path / "data"
+    service = WorkspaceService(WorkspaceRepository(data_root))
     service.initialize_team("Group", [TeamMember(id="alice", name="Alice")])
     service.initialize_assignment("Only", "Do it")
     course = Course(
@@ -150,7 +145,7 @@ def test_agent_outputs_are_persisted_as_shared_reviewed_revision(tmp_path: Path)
     )
     from coursepilot.repositories import CourseRepository
 
-    CourseRepository(database).add(
+    CourseRepository(data_root).add(
         course_id=course.id,
         name=course.name,
         course_date=course.course_date,
@@ -190,9 +185,8 @@ def test_agent_outputs_are_persisted_as_shared_reviewed_revision(tmp_path: Path)
 def test_agent_output_transaction_rolls_back_answer_when_revision_has_no_review(
     tmp_path: Path,
 ) -> None:
-    database = tmp_path / "business.db"
-    initialize_database(database)
-    repository = WorkspaceRepository(database)
+    data_root = tmp_path / "data"
+    repository = WorkspaceRepository(data_root)
     service = WorkspaceService(repository)
     service.initialize_team("Group", [TeamMember(id="alice", name="Alice")])
     service.initialize_assignment("Only", "Do it")
@@ -206,7 +200,7 @@ def test_agent_output_transaction_rolls_back_answer_when_revision_has_no_review(
     )
     from coursepilot.repositories import CourseRepository
 
-    CourseRepository(database).add(
+    CourseRepository(data_root).add(
         course_id=course.id,
         name=course.name,
         course_date=course.course_date,

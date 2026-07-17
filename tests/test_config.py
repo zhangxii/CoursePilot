@@ -10,14 +10,14 @@ def test_load_settings_reads_llm_and_local_library_configuration(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("COURSEPILOT_LLM_API_KEY", "test-secret")
-    monkeypatch.setenv("COURSEPILOT_DATABASE_PATH", "var/test.db")
+    monkeypatch.setenv("COURSEPILOT_DATA_PATH", "var/data")
     monkeypatch.setenv("COURSEPILOT_FULL_CONTEXT_CHARS", "40000")
     load_settings.cache_clear()
 
     settings = load_settings()
 
     assert settings.llm_api_key.get_secret_value() == "test-secret"
-    assert settings.database_path == Path("var/test.db")
+    assert settings.data_path == Path("var/data")
     assert settings.full_context_chars == 40_000
     assert "test-secret" not in repr(settings)
 

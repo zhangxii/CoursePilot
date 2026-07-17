@@ -16,9 +16,8 @@ from agents import (
 )
 from openai import AsyncOpenAI
 
-from coursepilot.agents import SqliteAgentRuntime, build_sdk_main_agent
+from coursepilot.agents import FileAgentRuntime, build_sdk_main_agent
 from coursepilot.config import load_settings
-from coursepilot.database import initialize_database
 from coursepilot.ingestion import MarkdownValidator, MaterialIngestionService
 from coursepilot.models import (
     Course,
@@ -55,11 +54,10 @@ class AppController(Protocol):
 class ProductionController:
     def __init__(self) -> None:
         settings = load_settings()
-        initialize_database(settings.database_path)
         self._settings = settings
-        self._courses = CourseRepository(settings.database_path)
-        self._materials = MaterialRepository(settings.database_path)
-        self._workspace = WorkspaceService(WorkspaceRepository(settings.database_path))
+        self._courses = CourseRepository(settings.data_path)
+        self._materials = MaterialRepository(settings.data_path)
+        self._workspace = WorkspaceService(WorkspaceRepository(settings.data_path))
         llm_client = AsyncOpenAI(
             api_key=settings.llm_api_key.get_secret_value(),
             base_url=settings.llm_base_url,
@@ -68,17 +66,16 @@ class ProductionController:
         set_tracing_disabled(True)
         self._search = LocalMaterialSearchGateway(
             self._materials,
-            material_root=settings.database_path.parent / "materials",
             full_context_chars=settings.full_context_chars,
         )
-        self._sessions = SqliteAgentRuntime(settings.database_path.with_name("sessions.db"))
+        self._sessions = FileAgentRuntime(settings.data_path)
 
     def view(self) -> WorkspaceView:
         courses = self._courses.list()
         active = self._courses.get_active()
         materials = [] if active is None else self._materials.list_for_course(active.id)
         context = None if active is None else self._workspace.context(active)
-        repository = WorkspaceRepository(self._settings.database_path)
+        repository = WorkspaceRepository(self._settings.data_path)
         revision = repository.latest_revision()
         comparison = None if revision is None else repository.compare_revision(revision)
         return WorkspaceView(
@@ -120,8 +117,7 @@ class ProductionController:
         active = self._courses.get_active()
         if active is None:
             raise ValueError("请先选择当前课程")
-        material_root = self._settings.database_path.parent / "materials"
-        staging_dir = material_root / ".staging"
+        staging_dir = self._settings.data_path / ".staging"
         staging_dir.mkdir(parents=True, exist_ok=True)
         path = staging_dir / Path(file_name).name
         path.write_bytes(content)
@@ -142,7 +138,6 @@ class ProductionController:
             ingestion = MaterialIngestionService(
                 repository=self._materials,
                 validator=validator,
-                material_root=material_root,
             )
             asyncio.run(ingestion.ingest(path, metadata))
         finally:

@@ -11,10 +11,6 @@ Write-Host "[CoursePilot] Checking configuration..."
 conda run -n coursepilot python -m coursepilot check-config
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-Write-Host "[CoursePilot] Initializing database..."
-conda run -n coursepilot python -m coursepilot init-db
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
 Write-Host "[CoursePilot] Starting http://localhost:8501"
 conda run -n coursepilot python -m streamlit run coursepilot/app.py
 exit $LASTEXITCODE

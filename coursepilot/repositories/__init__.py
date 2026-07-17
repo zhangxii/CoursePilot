@@ -1,4 +1,4 @@
-"""SQLite repositories for persisted CoursePilot business entities."""
+"""File-backed repositories for persisted CoursePilot entities."""
 
 from coursepilot.repositories.courses import CourseRepository
 from coursepilot.repositories.materials import MaterialRepository

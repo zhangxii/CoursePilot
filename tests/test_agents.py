@@ -6,10 +6,10 @@ import pytest
 from coursepilot.agents import (
     AgentRequest,
     CourseRequiredError,
+    FileAgentRuntime,
     MainAgent,
     RuleBasedIntentClassifier,
     SpecialistResult,
-    SqliteAgentRuntime,
     build_sdk_main_agent,
 )
 from coursepilot.models import AgentKind, CourseContext, ReviewResult
@@ -113,14 +113,18 @@ def test_main_agent_trace_records_ordered_specialist_sequence() -> None:
     assert [record.attributes["agent"] for record in trace.records] == ["review", "revision"]
 
 
-def test_sqlite_agent_runtime_restores_messages_after_restart(tmp_path: Path) -> None:
-    database = tmp_path / "sessions.db"
-    first = SqliteAgentRuntime(database).session("group-chat")
+def test_jsonl_agent_runtime_restores_messages_after_restart(tmp_path: Path) -> None:
+    first = FileAgentRuntime(tmp_path).session("group-chat")
     asyncio.run(first.add_items([{"role": "user", "content": "remember this"}]))
 
-    restored = SqliteAgentRuntime(database).session("group-chat")
+    restored = FileAgentRuntime(tmp_path).session("group-chat")
 
     assert asyncio.run(restored.get_items())[0]["content"] == "remember this"
+
+    assert asyncio.run(restored.pop_item())["content"] == "remember this"
+    asyncio.run(restored.add_items([{"role": "user", "content": "new"}]))
+    asyncio.run(restored.clear_session())
+    assert asyncio.run(restored.get_items()) == []
 
 
 def test_sdk_runtime_connects_runner_to_persistent_session(tmp_path: Path) -> None:
@@ -130,7 +134,7 @@ def test_sdk_runtime_connects_runner_to_persistent_session(tmp_path: Path) -> No
             await session.add_items([{"role": "user", "content": message}])
             return "done"
 
-    runtime = SqliteAgentRuntime(tmp_path / "sessions.db")
+    runtime = FileAgentRuntime(tmp_path)
 
     result = asyncio.run(
         runtime.run(build_sdk_main_agent("gpt-5-mini"), "hello", "group", runner=FakeRunner)
