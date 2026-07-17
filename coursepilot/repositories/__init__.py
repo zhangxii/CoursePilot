@@ -2,5 +2,6 @@
 
 from coursepilot.repositories.courses import CourseRepository
 from coursepilot.repositories.materials import MaterialRepository
+from coursepilot.repositories.workspace import WorkspaceRepository
 
-__all__ = ["CourseRepository", "MaterialRepository"]
+__all__ = ["CourseRepository", "MaterialRepository", "WorkspaceRepository"]

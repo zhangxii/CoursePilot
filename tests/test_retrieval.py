@@ -16,6 +16,7 @@ from coursepilot.retrieval import (
     MemoryTraceRecorder,
     RemoteSearchHit,
     SearchScope,
+    merge_evidence,
     search_course_archive,
     search_current_course,
 )
@@ -156,3 +157,35 @@ def test_archive_search_traces_approved_reason_even_when_gateway_fails() -> None
         )
 
     assert trace.events[0].attributes["reason"] == "user_requested"
+
+
+def test_merge_keeps_current_course_first_and_marks_cross_course_conflict() -> None:
+    current_gateway = FakeSearchGateway([hit("architecture-20260717")])
+    archive_gateway = FakeSearchGateway([hit("requirements-20260701", "archived")])
+    current = asyncio.run(search_current_course("standard", context(), gateway=current_gateway))
+    archive = asyncio.run(
+        search_course_archive(
+            "standard",
+            ArchiveSearchReason.USER_REQUESTED,
+            context(),
+            gateway=archive_gateway,
+        )
+    )
+    archive = archive.model_copy(
+        update={
+            "items": [
+                archive.items[0].model_copy(
+                    update={
+                        "source": archive.items[0].source.model_copy(
+                            update={"excerpt": "Historical conflicting standard"}
+                        )
+                    }
+                )
+            ]
+        }
+    )
+
+    merged = merge_evidence(current, archive)
+
+    assert merged.items[0].source.course_id == "architecture-20260717"
+    assert merged.has_cross_course_conflict is True

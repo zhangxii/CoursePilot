@@ -2,6 +2,8 @@
 
 from coursepilot.models.contracts import (
     AgentKind,
+    AnswerComparison,
+    AnswerRecord,
     Assignment,
     AssignmentResult,
     Course,
@@ -15,8 +17,10 @@ from coursepilot.models.contracts import (
     MaterialStatus,
     MaterialType,
     NotesResult,
+    ReviewRecord,
     ReviewResult,
     RevisionMode,
+    RevisionRecord,
     RevisionResult,
     SourceRef,
     Team,
@@ -25,6 +29,8 @@ from coursepilot.models.contracts import (
 
 __all__ = [
     "AgentKind",
+    "AnswerRecord",
+    "AnswerComparison",
     "Assignment",
     "AssignmentResult",
     "Course",
@@ -39,8 +45,10 @@ __all__ = [
     "MaterialType",
     "NotesResult",
     "ReviewResult",
+    "ReviewRecord",
     "RevisionMode",
     "RevisionResult",
+    "RevisionRecord",
     "SourceRef",
     "Team",
     "TeamMember",

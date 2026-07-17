@@ -4,6 +4,7 @@ from coursepilot.retrieval.search import (
     ArchiveSearchReason,
     ComparisonFilter,
     CompoundFilter,
+    EvidenceSet,
     InvalidArchiveSearchReason,
     MemoryTraceRecorder,
     RemoteSearchHit,
@@ -13,6 +14,7 @@ from coursepilot.retrieval.search import (
     SearchScope,
     TraceEvent,
     TraceRecorder,
+    merge_evidence,
     search_course_archive,
     search_current_course,
 )
@@ -21,6 +23,7 @@ __all__ = [
     "ArchiveSearchReason",
     "ComparisonFilter",
     "CompoundFilter",
+    "EvidenceSet",
     "InvalidArchiveSearchReason",
     "MemoryTraceRecorder",
     "RemoteSearchHit",
@@ -32,4 +35,5 @@ __all__ = [
     "TraceRecorder",
     "search_course_archive",
     "search_current_course",
+    "merge_evidence",
 ]

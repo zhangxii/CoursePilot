@@ -71,6 +71,22 @@ class SearchResult(BaseModel):
     reason: ArchiveSearchReason | None = None
 
 
+class EvidenceSet(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    items: list[SearchItem]
+    has_cross_course_conflict: bool
+
+
+def merge_evidence(current: SearchResult, archive: SearchResult | None = None) -> EvidenceSet:
+    """Keep current evidence first and flag conflicting cross-course statements."""
+    archive_items = [] if archive is None else archive.items
+    current_excerpts = {item.source.excerpt.strip().lower() for item in current.items}
+    archive_excerpts = {item.source.excerpt.strip().lower() for item in archive_items}
+    conflict = bool(current_excerpts and archive_excerpts and current_excerpts != archive_excerpts)
+    return EvidenceSet(items=[*current.items, *archive_items], has_cross_course_conflict=conflict)
+
+
 class TraceEvent(BaseModel):
     model_config = ConfigDict(frozen=True)
 

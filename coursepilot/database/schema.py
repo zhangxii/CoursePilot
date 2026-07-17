@@ -5,7 +5,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 INITIAL_SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS teams (
@@ -130,6 +130,15 @@ MIGRATIONS = {
     2: """
         CREATE UNIQUE INDEX IF NOT EXISTS idx_courses_single_current
             ON courses(status) WHERE status = 'current';
+    """,
+    3: """
+        CREATE TABLE IF NOT EXISTS course_notes (
+            id TEXT PRIMARY KEY,
+            course_id TEXT NOT NULL,
+            result_json TEXT NOT NULL CHECK (json_valid(result_json)),
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (course_id) REFERENCES courses(id) ON DELETE CASCADE
+        );
     """,
 }
 

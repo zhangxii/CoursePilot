@@ -113,6 +113,38 @@ class Assignment(Contract):
     rubric: str | None = None
 
 
+class AnswerRecord(Contract):
+    id: NonEmptyText
+    assignment_id: Literal["main_assignment"] = "main_assignment"
+    version: PositiveVersion
+    content: NonEmptyText
+    operated_by_member_id: NonEmptyText
+
+
+class ReviewRecord(Contract):
+    id: NonEmptyText
+    answer_id: NonEmptyText
+    result: "ReviewResult"
+
+
+class RevisionRecord(Contract):
+    id: NonEmptyText
+    source_answer_id: NonEmptyText
+    review_id: NonEmptyText
+    result_answer_id: NonEmptyText
+    mode: RevisionMode
+    change_summary: NonEmptyText
+
+
+class AnswerComparison(Contract):
+    source_version: PositiveVersion
+    result_version: PositiveVersion
+    operated_by_member_id: NonEmptyText
+    change_summary: NonEmptyText
+    resolved_issues: list[NonEmptyText]
+    unresolved_issues: list[NonEmptyText]
+
+
 class SourceRef(Contract):
     material_id: NonEmptyText
     file_name: NonEmptyText
