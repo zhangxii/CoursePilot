@@ -1,5 +1,19 @@
 # CoursePilot
 
+## TL;DR
+
+CoursePilot 是一个面向学生小组的本地优先课程学习 Agent：导入 Markdown/TXT 课程资料后，可以用多个专业 Agent 协作完成知识总结、作业撰写、答案评审与修改，并按课程和题目保存全过程。
+
+```powershell
+conda create -n coursepilot python=3.12 -y
+conda activate coursepilot
+python -m pip install -e ".[dev]"
+Copy-Item .env.example .env  # 填入 COURSEPILOT_LLM_API_KEY
+.\start.ps1
+```
+
+然后访问 `http://localhost:8501`。需要 Python 3.12，以及支持工具调用和结构化输出的 OpenAI-compatible 模型服务。API Key 仅保存在本机 `.env`，课程资料与学习记录默认保存在本机 `data/`。
+
 CoursePilot 是面向一个学生小组、多道小组作业题的课程学习 Agent 系统。它支持：
 
 - 上传预先整理好的 Markdown 或 UTF-8 纯文本课程资料；
