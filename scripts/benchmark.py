@@ -4,7 +4,7 @@ import asyncio
 import json
 from time import perf_counter
 
-from coursepilot.agents import (
+from coursepilot.agent_runtime import (
     AgentRequest,
     MainAgent,
     RuleBasedIntentClassifier,
@@ -19,7 +19,11 @@ class Specialist:
 
 
 async def main() -> None:
-    context = CourseContext(active_course_id="course", active_course_name="Course")
+    context = CourseContext(
+        active_course_id="course",
+        active_course_name="Course",
+        active_assignment_id="assignment",
+    )
     agent = MainAgent(Specialist(), RuleBasedIntentClassifier())
     samples = {
         "notes": "summary",
