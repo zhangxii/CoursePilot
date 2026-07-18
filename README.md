@@ -4,6 +4,8 @@
 
 CoursePilot 是一个面向学生小组的本地优先课程学习 Agent：导入 Markdown/TXT 课程资料后，可以用多个专业 Agent 协作完成知识总结、作业撰写、答案评审与修改，并按课程和题目保存全过程。
 
+![1784346177527](image/README/1784346177527.png)
+
 ```powershell
 conda create -n coursepilot python=3.12 -y
 conda activate coursepilot
@@ -79,15 +81,15 @@ COURSEPILOT_MAX_RETRIES=2
 
 关键配置说明：
 
-| 配置项 | 是否必填 | 说明 |
-|---|---|---|
-| `COURSEPILOT_LLM_API_KEY` | 是 | OpenAI 或第三方 OpenAI-compatible 模型服务的 Key |
-| `COURSEPILOT_LLM_BASE_URL` | 否 | 第三方服务的 OpenAI-compatible `/v1` 地址；OpenAI 官方服务留空 |
-| `COURSEPILOT_MODEL_NAME` | 否 | Agent 使用的模型，默认 `gpt-5-mini` |
-| `COURSEPILOT_DATA_PATH` | 否 | 文件数据根目录，默认 `data` |
-| `COURSEPILOT_MAX_UPLOAD_MB` | 否 | Markdown/纯文本上传大小上限 |
-| `COURSEPILOT_MAX_SEARCH_RESULTS` | 否 | 单次检索最大结果数 |
-| `COURSEPILOT_FULL_CONTEXT_CHARS` | 否 | 全部资料直接送入模型的字符预算，默认 `60000` |
+| 配置项                             | 是否必填 | 说明                                                            |
+| ---------------------------------- | -------- | --------------------------------------------------------------- |
+| `COURSEPILOT_LLM_API_KEY`        | 是       | OpenAI 或第三方 OpenAI-compatible 模型服务的 Key                |
+| `COURSEPILOT_LLM_BASE_URL`       | 否       | 第三方服务的 OpenAI-compatible`/v1` 地址；OpenAI 官方服务留空 |
+| `COURSEPILOT_MODEL_NAME`         | 否       | Agent 使用的模型，默认`gpt-5-mini`                            |
+| `COURSEPILOT_DATA_PATH`          | 否       | 文件数据根目录，默认`data`                                    |
+| `COURSEPILOT_MAX_UPLOAD_MB`      | 否       | Markdown/纯文本上传大小上限                                     |
+| `COURSEPILOT_MAX_SEARCH_RESULTS` | 否       | 单次检索最大结果数                                              |
+| `COURSEPILOT_FULL_CONTEXT_CHARS` | 否       | 全部资料直接送入模型的字符预算，默认`60000`                   |
 
 验证配置：
 
