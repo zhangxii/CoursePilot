@@ -325,6 +325,12 @@ class WorkspaceRepository:
                     derived_from_candidate_id=candidate.id,
                     content=corrected_content,
                     revision_mode=candidate.revision_mode,
+                    review_fixed_issues=[
+                        issue
+                        for issue in first_review.critical_issues
+                        if issue not in final_review.critical_issues
+                    ],
+                    review_pending_issues=final_review.critical_issues,
                 )
                 superseded = CandidateDraft.model_validate(
                     {
@@ -350,6 +356,11 @@ class WorkspaceRepository:
                     **target.model_dump(mode="json"),
                     "status": CandidateStatus.READY_FOR_ADOPTION,
                     "automatic_review_id": review_id,
+                    "review_pending_issues": (
+                        first_review.critical_issues
+                        if final_review is None
+                        else target.review_pending_issues
+                    ),
                 }
             )
             documents[self._candidate_path(ready.assignment_id, ready.id)] = (

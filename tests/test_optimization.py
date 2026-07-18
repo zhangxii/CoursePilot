@@ -239,6 +239,10 @@ def test_automatic_review_contract_excludes_conversation_and_correction_is_bound
     assert len(reviewer.requests) == 2
     assert all("conversation" not in request.model_dump() for request in reviewer.requests)  # type: ignore[union-attr]
     assert service.candidates.get(candidate.id).status.value == "superseded"
+    assert finished.result_candidate_id is not None
+    ready = service.candidates.get(finished.result_candidate_id)
+    assert ready.review_fixed_issues == ["Citation missing"]
+    assert ready.review_pending_issues == []
 
 
 def test_candidate_base_and_restructure_constraints_remain_enforced(tmp_path: Path) -> None:

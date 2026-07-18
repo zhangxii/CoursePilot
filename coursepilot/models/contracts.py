@@ -230,6 +230,8 @@ class CandidateDraft(Contract):
     change_summary: str = ""
     resolved_issues: list[NonEmptyText] = Field(default_factory=list)
     unresolved_issues: list[NonEmptyText] = Field(default_factory=list)
+    review_fixed_issues: list[NonEmptyText] = Field(default_factory=list)
+    review_pending_issues: list[NonEmptyText] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_state_links(self) -> "CandidateDraft":

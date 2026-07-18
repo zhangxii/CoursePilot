@@ -3,7 +3,6 @@
 import asyncio
 from datetime import date
 from pathlib import Path
-from typing import Protocol
 
 import streamlit as st
 from agents import (
@@ -20,11 +19,16 @@ from coursepilot.agent_runtime import FileAgentRuntime, build_sdk_main_agent
 from coursepilot.config import load_settings
 from coursepilot.ingestion import MarkdownValidator, MaterialIngestionService
 from coursepilot.models import (
+    AnswerRecord,
+    AnswerVersionComparison,
+    AssignmentUploadPurpose,
     AutomaticReviewInput,
+    CandidateComparison,
     CandidateDraft,
     Conversation,
     Course,
     CourseContext,
+    ImportedAssignment,
     MainAgentResult,
     MaterialMetadata,
     MaterialStatus,
@@ -52,45 +56,15 @@ from coursepilot.retrieval import (
     search_current_course,
 )
 from coursepilot.services import (
+    AdoptCandidateService,
+    AssignmentArtifactService,
     CandidateDraftService,
     ConversationService,
     CourseService,
     OptimizationService,
     WorkspaceService,
 )
-from coursepilot.ui import WorkspaceView
-
-
-class AppController(Protocol):
-    def create_course(
-        self, course_id: str, name: str, course_date: date, teacher: str, topic: str
-    ) -> None: ...
-
-    def activate_course(self, course_id: str) -> None: ...
-
-    def create_assignment(self, assignment_id: str, title: str, requirements: str) -> None: ...
-
-    def activate_assignment(self, assignment_id: str) -> None: ...
-
-    def upload_material(self, file_name: str, content: bytes) -> None: ...
-
-    def run_agent(self, message: str) -> str: ...
-
-    def list_conversations(self) -> list[Conversation]: ...
-
-    def create_conversation(
-        self, title: str, *, blank: bool = False, answer_version_id: str | None = None
-    ) -> Conversation: ...
-
-    def activate_conversation(self, conversation_id: str) -> Conversation: ...
-
-    def rename_conversation(self, conversation_id: str, title: str) -> Conversation: ...
-
-    def archive_conversation(self, conversation_id: str) -> Conversation: ...
-
-    def branch_conversation(
-        self, parent_conversation_id: str, message_id: str, title: str
-    ) -> Conversation: ...
+from coursepilot.ui import WorkspaceView, render_workspace
 
 
 class ProductionController:
@@ -115,6 +89,12 @@ class ProductionController:
             ConversationRepository(settings.data_path), self._workspace, runtime
         )
         self._candidates = CandidateDraftService(settings.data_path, self._workspace)
+        self._artifacts = AssignmentArtifactService(
+            settings.data_path,
+            self._workspace,
+            max_upload_bytes=settings.max_upload_mb * 1024 * 1024,
+        )
+        self._adoption = AdoptCandidateService(self._candidates, self._workspace)
         self._optimizations = OptimizationService(settings.data_path, self._workspace)
 
     def view(self) -> WorkspaceView:
@@ -128,6 +108,17 @@ class ProductionController:
         repository = WorkspaceRepository(self._settings.data_path)
         revision = repository.latest_revision()
         comparison = None if revision is None else repository.compare_revision(revision)
+        candidates = repository.list_candidates()
+        candidate_reviews = {
+            item.id: repository.get_candidate_review(item.automatic_review_id).result
+            for item in candidates
+            if item.automatic_review_id is not None
+        }
+        formal_reviews = {
+            answer.id: review.result
+            for answer in self._workspace.list_answers()
+            if (review := repository.latest_review(answer.id)) is not None
+        }
         return WorkspaceView(
             team=self._workspace.get_team(),
             courses=courses,
@@ -138,6 +129,15 @@ class ProductionController:
             review=None if context is None else context.latest_review,
             materials=materials,
             comparison=comparison,
+            formal_answer=self._workspace.latest_answer(),
+            answer_versions=self._workspace.list_answers(),
+            attachments=self._artifacts.list_attachments(),
+            conversations=self._conversations.list(),
+            active_conversation=conversation,
+            candidates=candidates,
+            candidate_reviews=candidate_reviews,
+            formal_reviews=formal_reviews,
+            optimization_tasks=self._optimizations.list_tasks(),
         )
 
     def initialize_workspace(
@@ -202,6 +202,47 @@ class ProductionController:
             asyncio.run(ingestion.ingest(path, metadata))
         finally:
             path.unlink(missing_ok=True)
+
+    def upload_assignment(
+        self,
+        file_name: str,
+        content: bytes,
+        purpose: AssignmentUploadPurpose,
+        version_note: str,
+    ) -> ImportedAssignment:
+        imported = self._artifacts.import_assignment(
+            file_name, content, purpose, "member-1", version_note
+        )
+        if imported.answer_version is not None:
+            self._conversations.create_from_version(
+                f"v{imported.answer_version.version} 后续处理", imported.answer_version.id
+            )
+        return imported
+
+    def adopt_candidate(self, candidate_id: str) -> AnswerRecord:
+        return self._adoption.adopt(candidate_id, "member-1")
+
+    def discard_candidate(self, candidate_id: str) -> CandidateDraft:
+        return self._candidates.discard(candidate_id)
+
+    def continue_candidate(self, candidate_id: str, content: str) -> CandidateDraft:
+        return self._candidates.continue_from(candidate_id, content)
+
+    def compare_candidate(self, candidate_id: str) -> CandidateComparison:
+        return self._candidates.compare_to_base(candidate_id)
+
+    def compare_answer_versions(
+        self, source_answer_id: str, result_answer_id: str
+    ) -> AnswerVersionComparison:
+        return self._artifacts.compare_answer_versions(source_answer_id, result_answer_id)
+
+    def request_formal_review(self, answer_version_id: str) -> str:
+        answer = self._workspace.get_answer(answer_version_id)
+        self._conversations.create_from_version(f"v{answer.version} 正式评审", answer.id)
+        return self.run_agent("请对当前绑定的正式版本发起正式评审，只评审，不修改。")
+
+    def conversation_messages(self, conversation_id: str) -> list[dict[str, object]]:
+        return asyncio.run(self._conversations.session(conversation_id).get_items())
 
     def list_conversations(self) -> list[Conversation]:
         return self._conversations.list()
@@ -569,104 +610,8 @@ class ProductionController:
         return candidate
 
 
-def render(view: WorkspaceView, controller: AppController) -> None:
-    st.set_page_config(page_title="CoursePilot", layout="wide")
-    st.title("CoursePilot 小组大作业工作区")
-    with st.sidebar:
-        st.subheader(view.team.name)
-        for member in view.team.members:
-            st.write(f"{member.name} · {member.role or '成员'}")
-        active = view.active_course
-        st.metric("当前课程", "未选择" if active is None else active.name)
-        selected = st.selectbox("切换课程", view.courses, format_func=lambda course: course.name)
-        if (
-            selected is not None
-            and (active is None or selected.id != active.id)
-            and st.button("确认切换课程")
-        ):
-            controller.activate_course(selected.id)
-        with st.expander("新增课程"):
-            course_name = st.text_input("课程名称")
-            course_id = st.text_input("课程 ID")
-            course_date = st.date_input("课程日期")
-            teacher = st.text_input("教师")
-            topic = st.text_input("主题")
-            if st.button("创建课程"):
-                controller.create_course(course_id, course_name, course_date, teacher, topic)
-                st.rerun()
-
-        st.divider()
-        active_assignment = view.assignment
-        st.metric("当前题目", active_assignment.title)
-        selected_assignment = st.selectbox(
-            "切换题目",
-            view.assignments,
-            index=next(
-                index
-                for index, assignment in enumerate(view.assignments)
-                if assignment.id == active_assignment.id
-            ),
-            format_func=lambda assignment: assignment.title,
-        )
-        if (
-            selected_assignment is not None
-            and selected_assignment.id != active_assignment.id
-            and st.button("确认切换题目")
-        ):
-            controller.activate_assignment(selected_assignment.id)
-            st.rerun()
-        with st.expander("新增题目"):
-            assignment_id = st.text_input("题目 ID")
-            assignment_title = st.text_input("题目标题")
-            assignment_requirements = st.text_area("题目要求")
-            if st.button("创建题目"):
-                controller.create_assignment(
-                    assignment_id, assignment_title, assignment_requirements
-                )
-                st.rerun()
-
-    materials, conversation, workspace = st.tabs(["课程资料", "Agent 对话", "作业"])
-    with materials:
-        active_course = view.active_course
-        if active_course is None:
-            st.info("请先在左侧创建课程；首门课程会自动成为当前课程。")
-        upload = st.file_uploader(
-            "上传 Markdown/纯文本",
-            type=["md", "txt"],
-            disabled=active_course is None,
-        )
-        if upload is not None and st.button("保存到资料库"):
-            try:
-                with st.status("正在保存 Markdown 资料"):
-                    controller.upload_material(upload.name, upload.getvalue())
-                st.success("课程资料已保存。")
-                st.rerun()
-            except Exception as error:
-                st.error(f"资料保存失败：{type(error).__name__}: {error}")
-        for material in view.materials:
-            st.write(material.file_name, material.index_status.value)
-    with conversation:
-        message = st.chat_input("总结、完成、评审或修改")
-        if message:
-            try:
-                with st.status("Agent 正在执行", expanded=True):
-                    response = controller.run_agent(message)
-                st.chat_message("assistant").write(response)
-            except Exception as error:
-                st.error(f"执行失败，请根据 request_id 查看日志：{type(error).__name__}")
-    with workspace:
-        st.subheader(view.assignment.title)
-        st.write(view.assignment.requirements)
-        st.caption(f"共享答案版本 v{view.answer_version}")
-        st.text_area("共享答案", view.answer or "", disabled=True)
-        if view.review is not None:
-            st.metric("最近评审", view.review.total_score)
-        st.radio("修改模式", ["保守修改", "深度重构"], horizontal=True)
-        if view.comparison is not None:
-            st.write("操作成员", view.comparison.operated_by_member_id)
-            st.write("变更摘要", view.comparison.change_summary)
-            st.write("已解决问题", view.comparison.resolved_issues)
-            st.write("未解决问题", view.comparison.unresolved_issues)
+def render(view: WorkspaceView, controller: ProductionController) -> None:
+    render_workspace(view, controller)
 
 
 def main() -> None:

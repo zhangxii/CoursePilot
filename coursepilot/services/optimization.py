@@ -145,6 +145,17 @@ class OptimizationService:
             raise KeyError(task_id)
         return OptimizationTask.model_validate(self._store.read_yaml(path))
 
+    def list_tasks(self) -> list[OptimizationTask]:
+        assignment_id = self._workspace.get_assignment().id
+        tasks = []
+        for path in self._store.glob(f"assignments/{assignment_id}/optimization-tasks/*.yaml"):
+            tasks.append(
+                OptimizationTask.model_validate(
+                    self._store.read_yaml(path.relative_to(self._store.root))
+                )
+            )
+        return tasks
+
     def base_content(self, task_id: str) -> str:
         task = self.get(task_id)
         if task.base_answer_version_id is not None:
@@ -315,6 +326,7 @@ class OptimizationService:
                     **candidate.model_dump(mode="json"),
                     "status": CandidateStatus.READY_FOR_ADOPTION,
                     "automatic_review_id": review.id,
+                    "review_pending_issues": result.critical_issues,
                 }
             )
         )
@@ -429,11 +441,14 @@ class OptimizationService:
         if source.status is not CandidateStatus.DRAFT:
             raise ValueError("only a draft candidate can be corrected")
         review = AutomaticReviewRecord(id=str(uuid4()), candidate_id=child.id, result=re_review)
+        fixed = [item for item in attempted_fixes if item not in re_review.critical_issues]
         ready = CandidateDraft.model_validate(
             {
                 **child.model_dump(mode="json"),
                 "status": CandidateStatus.READY_FOR_ADOPTION,
                 "automatic_review_id": review.id,
+                "review_fixed_issues": fixed,
+                "review_pending_issues": re_review.critical_issues,
             }
         )
         superseded = CandidateDraft.model_validate(
@@ -443,7 +458,6 @@ class OptimizationService:
                 "superseded_by_candidate_id": ready.id,
             }
         )
-        fixed = [item for item in attempted_fixes if item not in re_review.critical_issues]
         updated = self._updated(
             task,
             result_candidate_id=ready.id,
