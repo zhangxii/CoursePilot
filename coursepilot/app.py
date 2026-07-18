@@ -20,12 +20,22 @@ from coursepilot.agent_runtime import FileAgentRuntime, build_sdk_main_agent
 from coursepilot.config import load_settings
 from coursepilot.ingestion import MarkdownValidator, MaterialIngestionService
 from coursepilot.models import (
+    AutomaticReviewInput,
+    CandidateDraft,
     Conversation,
     Course,
     CourseContext,
     MainAgentResult,
     MaterialMetadata,
     MaterialStatus,
+    OptimizationAnalysisInput,
+    OptimizationAnalysisResult,
+    OptimizationCorrectionInput,
+    OptimizationIssue,
+    OptimizationTask,
+    ReviewResult,
+    RevisionMode,
+    RevisionResult,
     TeamMember,
 )
 from coursepilot.repositories import (
@@ -41,7 +51,13 @@ from coursepilot.retrieval import (
     search_course_archive,
     search_current_course,
 )
-from coursepilot.services import ConversationService, CourseService, WorkspaceService
+from coursepilot.services import (
+    CandidateDraftService,
+    ConversationService,
+    CourseService,
+    OptimizationService,
+    WorkspaceService,
+)
 from coursepilot.ui import WorkspaceView
 
 
@@ -98,6 +114,8 @@ class ProductionController:
         self._conversations = ConversationService(
             ConversationRepository(settings.data_path), self._workspace, runtime
         )
+        self._candidates = CandidateDraftService(settings.data_path, self._workspace)
+        self._optimizations = OptimizationService(settings.data_path, self._workspace)
 
     def view(self) -> WorkspaceView:
         courses = self._courses.list()
@@ -211,6 +229,137 @@ class ProductionController:
     ) -> Conversation:
         return asyncio.run(self._conversations.branch(parent_conversation_id, message_id, title))
 
+    def start_optimization(
+        self,
+        *,
+        mode: RevisionMode,
+        user_direction: str | None = None,
+        base_answer_version_id: str | None = None,
+        base_candidate_id: str | None = None,
+        preserve_constraints: list[str] | None = None,
+        prohibited_changes: list[str] | None = None,
+        format_constraints: list[str] | None = None,
+        max_words: int | None = None,
+        max_characters: int | None = None,
+    ) -> OptimizationTask:
+        if (base_answer_version_id is None) == (base_candidate_id is None):
+            raise ValueError("请选择一个正式版本或候选稿作为优化基础")
+        conversation_id = self._conversations.active().id
+        if base_answer_version_id is not None:
+            return self._optimizations.create_for_answer(
+                conversation_id,
+                base_answer_version_id,
+                mode,
+                user_direction=user_direction,
+                preserve_constraints=preserve_constraints,
+                prohibited_changes=prohibited_changes,
+                format_constraints=format_constraints,
+                max_words=max_words,
+                max_characters=max_characters,
+            )
+        if base_candidate_id is None:
+            raise ValueError("候选稿基础不能为空")
+        return self._optimizations.create_for_candidate(
+            conversation_id,
+            base_candidate_id,
+            mode,
+            user_direction=user_direction,
+            preserve_constraints=preserve_constraints,
+            prohibited_changes=prohibited_changes,
+            format_constraints=format_constraints,
+            max_words=max_words,
+            max_characters=max_characters,
+        )
+
+    def upload_optimization_direction(
+        self, task_id: str, file_name: str, content: bytes
+    ) -> OptimizationTask:
+        return self._optimizations.attach_direction(task_id, file_name, content)
+
+    def analyze_optimization(self, task_id: str) -> OptimizationTask:
+        active = self._courses.get_active()
+        if active is None:
+            raise ValueError("请先选择当前课程")
+        task = self._optimizations.get(task_id)
+        base_content = self._optimizations.base_content(task.id)
+        context = self._workspace.context(active, self._conversations.active())
+        evidence = asyncio.run(
+            search_current_course(
+                base_content,
+                context,
+                gateway=self._search,
+                max_results=self._settings.max_search_results,
+            )
+        )
+        model = self._settings.model_name
+
+        class Analyzer:
+            def analyze(self, request: OptimizationAnalysisInput) -> list[OptimizationIssue]:
+                agent = Agent[None](
+                    name="OptimizationProblemAnalyzer",
+                    instructions=(
+                        "只分析问题，不生成修改稿。每项必须包含问题、理由、影响和优先级。"
+                    ),
+                    model=model,
+                    output_type=OptimizationAnalysisResult,
+                )
+                result = Runner.run_sync(agent, request.model_dump_json())
+                return OptimizationAnalysisResult.model_validate(result.final_output).issues
+
+        return self._optimizations.analyze_problems(
+            task.id, Analyzer(), course_evidence=[item.source for item in evidence.items]
+        )
+
+    def confirm_optimization_suggestions(
+        self, task_id: str, suggestion_ids: list[str], supplemental_direction: str | None = None
+    ) -> OptimizationTask:
+        return self._optimizations.confirm_suggestions(
+            task_id,
+            suggestion_ids,
+            supplemental_direction=supplemental_direction,
+        )
+
+    def generate_optimization(self, task_id: str) -> OptimizationTask:
+        active = self._courses.get_active()
+        if active is None:
+            raise ValueError("请先选择当前课程")
+        task = self._optimizations.get(task_id)
+        base_content = self._optimizations.base_content(task.id)
+        revision_agent = Agent[None](
+            name="DirectedRevisionAgent",
+            instructions=(
+                "严格按优化任务的模式、方向、保留项、禁止项、格式和篇幅约束修改，"
+                "输出候选稿与逐项变更。"
+            ),
+            model=self._settings.model_name,
+            output_type=RevisionResult,
+        )
+        revision_run = Runner.run_sync(
+            revision_agent, f"基础正文：{base_content}\n优化任务：{task.model_dump_json()}"
+        )
+        revision = RevisionResult.model_validate(revision_run.final_output)
+        self._optimizations.create_candidate(task.id, revision.revised_answer)
+        controller = self
+        course = active
+
+        class Reviewer:
+            def review(self, request: AutomaticReviewInput) -> ReviewResult:
+                return controller._review_candidate(
+                    request.candidate_content,
+                    course,
+                    constraints=request.model_dump_json(),
+                )
+
+        class Corrector:
+            def correct(self, request: OptimizationCorrectionInput) -> str:
+                correction = Runner.run_sync(
+                    revision_agent,
+                    f"只修复一次审查问题，遵守全部约束：{request.model_dump_json()}",
+                )
+                return RevisionResult.model_validate(correction.final_output).revised_answer
+
+        return self._optimizations.run_automatic_review(task.id, Reviewer(), corrector=Corrector())
+
     def run_agent(self, message: str) -> str:
         active = self._courses.get_active()
         if active is None:
@@ -226,8 +375,9 @@ class ProductionController:
         output = self._run_sdk(agent, enriched_message)
         if output.intent.value == "revision" and context.latest_review is None:
             return self._run_review_then_revision(output, message, active)
-        self._persist_agent_output(output)
-        return output.final_response
+        candidate = self._persist_agent_output(output)
+        review_summary = "" if candidate is None else self._automatically_review(candidate, active)
+        return output.final_response + review_summary
 
     def _run_sdk(self, agent: Agent[None], message: str) -> MainAgentResult:
         result = Runner.run_sync(
@@ -272,8 +422,84 @@ class ProductionController:
                 "notes_output": None,
             }
         )
-        self._persist_agent_output(revision_only)
-        return f"{review_only.final_response}\n{revision_only.final_response}"
+        candidate = self._persist_agent_output(revision_only)
+        review_summary = "" if candidate is None else self._automatically_review(candidate, active)
+        return f"{review_only.final_response}\n{revision_only.final_response}{review_summary}"
+
+    def _automatically_review(self, candidate: CandidateDraft, course: Course) -> str:
+        first_review = self._review_candidate(candidate.content, course)
+        corrected_content = None
+        final_review = None
+        if first_review.critical_issues:
+            correction_agent = Agent[None](
+                name="BoundedCorrectionAgent",
+                instructions=(
+                    "仅修复自动审查列出的问题，保持候选稿其余观点与结构；只执行一次修正。"
+                ),
+                model=self._settings.model_name,
+                output_type=RevisionResult,
+            )
+            correction_run = Runner.run_sync(
+                correction_agent,
+                (
+                    f"候选稿：{candidate.content}\n自动审查：{first_review.model_dump_json()}\n"
+                    "输出一次修正版和逐项变更。"
+                ),
+            )
+            correction = RevisionResult.model_validate(correction_run.final_output)
+            corrected_content = correction.revised_answer
+            final_review = self._review_candidate(corrected_content, course)
+        ready = self._candidates.complete_review_cycle(
+            candidate.id,
+            first_review,
+            corrected_content=corrected_content,
+            final_review=final_review,
+        )
+        pending = (
+            first_review.critical_issues if final_review is None else final_review.critical_issues
+        )
+        fixed = (
+            []
+            if final_review is None
+            else [item for item in first_review.critical_issues if item not in pending]
+        )
+        return (
+            "\n\n自动审查已完成，候选稿等待你的决定。"
+            f"发现：{len(first_review.critical_issues)} 项；已修复：{len(fixed)} 项；"
+            f"待确认：{len(pending)} 项；审查记录：{ready.automatic_review_id}"
+        )
+
+    def _review_candidate(
+        self, content: str, course: Course, *, constraints: str | None = None
+    ) -> ReviewResult:
+        formal_context = self._workspace.context(course, self._conversations.active())
+        evidence = asyncio.run(
+            search_current_course(
+                content,
+                formal_context,
+                gateway=self._search,
+                max_results=self._settings.max_search_results,
+            )
+        )
+        assignment = self._workspace.get_assignment()
+        review_agent = Agent[None](
+            name="IndependentReviewAgent",
+            instructions=(
+                "独立评审候选稿，只使用输入中的题目、评分标准、当前课程证据和候选正文。"
+                "不得推测或引用生成过程、隐藏推理或所属对话。"
+            ),
+            model=self._settings.model_name,
+            output_type=ReviewResult,
+        )
+        review_run = Runner.run_sync(
+            review_agent,
+            (
+                f"题目：{assignment.requirements}\n评分标准：{assignment.rubric or '未提供'}\n"
+                f"当前课程证据：{evidence.model_dump_json()}\n"
+                f"约束：{constraints or '无额外约束'}\n候选稿：{content}"
+            ),
+        )
+        return ReviewResult.model_validate(review_run.final_output)
 
     def _build_agent(self, context: CourseContext) -> Agent[None]:
         retrieval_policy = CurrentFirstPolicy()
@@ -333,11 +559,14 @@ class ProductionController:
             revision_tools=[get_current_answer, search_current, search_archive],
         )
 
-    def _persist_agent_output(self, output: MainAgentResult) -> None:
+    def _persist_agent_output(self, output: MainAgentResult) -> CandidateDraft | None:
         active = self._courses.get_active()
         if active is None:
             raise ValueError("请先选择当前课程")
-        self._workspace.apply_agent_output(active, output, "member-1", self._conversations.active())
+        _, candidate = self._workspace.apply_agent_output_with_candidate(
+            active, output, "member-1", self._conversations.active()
+        )
+        return candidate
 
 
 def render(view: WorkspaceView, controller: AppController) -> None:

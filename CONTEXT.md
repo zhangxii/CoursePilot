@@ -51,3 +51,11 @@ _Avoid_: Revision, score for an assignment question without a target version
 **Revision**:
 A change based on a formal answer or candidate that produces another candidate. A revision does not publish a formal version by itself.
 _Avoid_: Adoption, direct answer replacement, new assignment
+
+**Optimization Task**:
+A persisted request to improve exactly one formal answer or candidate, including direction source, selected Agent suggestions, revision mode, and explicit constraints.
+_Avoid_: Chat prompt, automatic publication, course material
+
+**Automatic Review**:
+A system-triggered independent review of one candidate. It receives no originating conversation messages or generation reasoning and may trigger at most one correction and re-review.
+_Avoid_: Formal Review, hidden self-score, unlimited retry loop

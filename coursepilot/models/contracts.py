@@ -77,6 +77,26 @@ class ConversationStatus(StrEnum):
     ARCHIVED = "archived"
 
 
+class OptimizationTaskStatus(StrEnum):
+    DRAFT = "draft"
+    AWAITING_SELECTION = "awaiting_selection"
+    READY_TO_GENERATE = "ready_to_generate"
+    CANDIDATE_DRAFTED = "candidate_drafted"
+    REVIEWED = "reviewed"
+    READY_FOR_DECISION = "ready_for_decision"
+
+
+class OptimizationDirectionSource(StrEnum):
+    USER_TEXT = "user_text"
+    USER_UPLOAD = "user_upload"
+    AGENT_ANALYSIS = "agent_analysis"
+
+
+class ReviewType(StrEnum):
+    AUTOMATIC = "automatic"
+    FORMAL = "formal"
+
+
 class AgentKind(StrEnum):
     NOTES = "notes"
     ASSIGNMENT = "assignment"
@@ -230,6 +250,8 @@ class CandidateDraft(Contract):
 class AutomaticReviewRecord(Contract):
     id: NonEmptyText
     candidate_id: NonEmptyText
+    review_type: Literal[ReviewType.AUTOMATIC] = ReviewType.AUTOMATIC
+    triggered_by: Literal["system"] = "system"
     result: "ReviewResult"
 
 
@@ -242,6 +264,148 @@ class CandidateComparison(Contract):
     change_summary: str = ""
     resolved_issues: list[NonEmptyText] = Field(default_factory=list)
     unresolved_issues: list[NonEmptyText] = Field(default_factory=list)
+
+
+class OptimizationIssue(Contract):
+    id: NonEmptyText
+    problem: NonEmptyText
+    reason: NonEmptyText
+    impact: NonEmptyText
+    priority: Annotated[int, Field(ge=1)]
+
+
+class OptimizationAnalysisInput(Contract):
+    assignment_id: NonEmptyText
+    assignment_requirements: NonEmptyText
+    rubric: str | None = None
+    base_content: NonEmptyText
+    course_evidence: list["SourceRef"] = Field(default_factory=list)
+
+
+class OptimizationAnalysisResult(Contract):
+    issues: Annotated[list[OptimizationIssue], Field(min_length=1)]
+
+
+class OptimizationDirectionAttachment(Contract):
+    id: NonEmptyText
+    task_id: NonEmptyText
+    original_file_name: NonEmptyText
+    original_path: NonEmptyText
+    normalized_path: NonEmptyText
+    normalized_content: NonEmptyText
+
+
+class OptimizationTask(Contract):
+    id: NonEmptyText
+    assignment_id: NonEmptyText
+    conversation_id: NonEmptyText
+    base_answer_version_id: str | None = None
+    base_candidate_draft_id: str | None = None
+    mode: RevisionMode
+    user_direction: str | None = None
+    direction_attachment_id: str | None = None
+    direction_text: str | None = None
+    direction_source: OptimizationDirectionSource | None = None
+    agent_suggestions: list[OptimizationIssue] = Field(default_factory=list)
+    selected_agent_suggestions: list[NonEmptyText] = Field(default_factory=list)
+    preserve_constraints: list[NonEmptyText] = Field(default_factory=list)
+    prohibited_changes: list[NonEmptyText] = Field(default_factory=list)
+    format_constraints: list[NonEmptyText] = Field(default_factory=list)
+    max_words: Annotated[int, Field(ge=1)] | None = None
+    max_characters: Annotated[int, Field(ge=1)] | None = None
+    status: OptimizationTaskStatus = OptimizationTaskStatus.DRAFT
+    result_candidate_id: str | None = None
+    first_review_id: str | None = None
+    final_review_id: str | None = None
+    correction_count: Annotated[int, Field(ge=0, le=1)] = 0
+    fixed_issues: list[NonEmptyText] = Field(default_factory=list)
+    pending_issues: list[NonEmptyText] = Field(default_factory=list)
+    auto_fixable_issues: list[NonEmptyText] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_base(self) -> "OptimizationTask":
+        if (self.base_answer_version_id is None) == (self.base_candidate_draft_id is None):
+            raise ValueError("optimization task requires exactly one base")
+        has_direction = self.direction_text is not None and self.direction_source is not None
+        if (self.direction_text is None) != (self.direction_source is None):
+            raise ValueError("direction text and source must be set together")
+        if self.status is OptimizationTaskStatus.AWAITING_SELECTION and (
+            not self.agent_suggestions or self.selected_agent_suggestions
+        ):
+            raise ValueError("awaiting selection requires unselected Agent suggestions")
+        if (
+            self.status is OptimizationTaskStatus.READY_TO_GENERATE
+            and not has_direction
+            and not self.selected_agent_suggestions
+        ):
+            raise ValueError("ready task requires a confirmed direction")
+        if (
+            self.status
+            in {
+                OptimizationTaskStatus.CANDIDATE_DRAFTED,
+                OptimizationTaskStatus.REVIEWED,
+                OptimizationTaskStatus.READY_FOR_DECISION,
+            }
+            and self.result_candidate_id is None
+        ):
+            raise ValueError("advanced optimization state requires a result candidate")
+        if self.status is OptimizationTaskStatus.REVIEWED and (
+            self.first_review_id is None or not self.auto_fixable_issues
+        ):
+            raise ValueError("reviewed task requires a review and fixable issues")
+        if (
+            self.status is OptimizationTaskStatus.READY_FOR_DECISION
+            and self.final_review_id is None
+        ):
+            raise ValueError("decision-ready task requires a final review")
+        pre_candidate = {
+            OptimizationTaskStatus.DRAFT,
+            OptimizationTaskStatus.AWAITING_SELECTION,
+            OptimizationTaskStatus.READY_TO_GENERATE,
+        }
+        if self.status in pre_candidate and any(
+            value is not None
+            for value in (self.result_candidate_id, self.first_review_id, self.final_review_id)
+        ):
+            raise ValueError("pre-generation task cannot reference candidate or review results")
+        if self.status is OptimizationTaskStatus.CANDIDATE_DRAFTED and any(
+            value is not None for value in (self.first_review_id, self.final_review_id)
+        ):
+            raise ValueError("drafted candidate cannot already reference reviews")
+        if self.status is OptimizationTaskStatus.REVIEWED and self.final_review_id is not None:
+            raise ValueError("task awaiting correction cannot have a final review")
+        if (
+            self.correction_count == 1
+            and self.status is not OptimizationTaskStatus.READY_FOR_DECISION
+        ):
+            raise ValueError("bounded correction must end in user decision state")
+        return self
+
+
+class AutomaticReviewInput(Contract):
+    assignment_id: NonEmptyText
+    assignment_requirements: NonEmptyText
+    rubric: str | None = None
+    candidate_id: NonEmptyText
+    candidate_content: NonEmptyText
+    course_evidence: list["SourceRef"] = Field(default_factory=list)
+    mode: RevisionMode | None = None
+    preserve_constraints: list[NonEmptyText] = Field(default_factory=list)
+    prohibited_changes: list[NonEmptyText] = Field(default_factory=list)
+    format_constraints: list[NonEmptyText] = Field(default_factory=list)
+    max_words: Annotated[int, Field(ge=1)] | None = None
+    max_characters: Annotated[int, Field(ge=1)] | None = None
+
+
+class OptimizationCorrectionInput(Contract):
+    candidate_content: NonEmptyText
+    issues: list[NonEmptyText]
+    mode: RevisionMode
+    preserve_constraints: list[NonEmptyText] = Field(default_factory=list)
+    prohibited_changes: list[NonEmptyText] = Field(default_factory=list)
+    format_constraints: list[NonEmptyText] = Field(default_factory=list)
+    max_words: Annotated[int, Field(ge=1)] | None = None
+    max_characters: Annotated[int, Field(ge=1)] | None = None
 
 
 class AnswerVersionComparison(Contract):
@@ -260,6 +424,8 @@ class AnswerVersionComparison(Contract):
 class ReviewRecord(Contract):
     id: NonEmptyText
     answer_id: NonEmptyText
+    review_type: Literal[ReviewType.FORMAL] = ReviewType.FORMAL
+    triggered_by: NonEmptyText = "user"
     result: "ReviewResult"
 
 

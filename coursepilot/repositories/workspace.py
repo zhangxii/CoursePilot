@@ -291,30 +291,71 @@ class WorkspaceRepository:
         return candidates
 
     def complete_candidate_review(self, candidate_id: str, result: ReviewResult) -> CandidateDraft:
+        return self.complete_candidate_review_cycle(candidate_id, result)
+
+    def complete_candidate_review_cycle(
+        self,
+        candidate_id: str,
+        first_review: ReviewResult,
+        *,
+        corrected_content: str | None = None,
+        final_review: ReviewResult | None = None,
+    ) -> CandidateDraft:
         with self._lock:
             candidate = self.get_candidate(candidate_id)
             if candidate.status is not CandidateStatus.DRAFT:
                 raise ValueError("only a draft candidate can become ready")
-            review = AutomaticReviewRecord(
-                id=str(uuid4()), candidate_id=candidate.id, result=result
+            if (corrected_content is None) != (final_review is None):
+                raise ValueError("correction and final review must be provided together")
+            first = AutomaticReviewRecord(
+                id=str(uuid4()), candidate_id=candidate.id, result=first_review
             )
+            target = candidate
+            documents: dict[str, str | bytes] = {
+                self._candidate_review_path(candidate.assignment_id, first.id): dump_yaml(
+                    first.model_dump(mode="json")
+                )
+            }
+            if corrected_content is not None and final_review is not None:
+                target = CandidateDraft(
+                    id=str(uuid4()),
+                    assignment_id=candidate.assignment_id,
+                    conversation_id=candidate.conversation_id,
+                    base_answer_version_id=candidate.base_answer_version_id,
+                    derived_from_candidate_id=candidate.id,
+                    content=corrected_content,
+                    revision_mode=candidate.revision_mode,
+                )
+                superseded = CandidateDraft.model_validate(
+                    {
+                        **candidate.model_dump(mode="json"),
+                        "status": CandidateStatus.SUPERSEDED,
+                        "superseded_by_candidate_id": target.id,
+                    }
+                )
+                documents[self._candidate_path(candidate.assignment_id, candidate.id)] = (
+                    self._candidate_document(superseded)
+                )
+                final = AutomaticReviewRecord(
+                    id=str(uuid4()), candidate_id=target.id, result=final_review
+                )
+                documents[self._candidate_review_path(target.assignment_id, final.id)] = dump_yaml(
+                    final.model_dump(mode="json")
+                )
+                review_id = final.id
+            else:
+                review_id = first.id
             ready = CandidateDraft.model_validate(
                 {
-                    **candidate.model_dump(mode="json"),
+                    **target.model_dump(mode="json"),
                     "status": CandidateStatus.READY_FOR_ADOPTION,
-                    "automatic_review_id": review.id,
+                    "automatic_review_id": review_id,
                 }
             )
-            self._store.write_batch(
-                {
-                    self._candidate_path(ready.assignment_id, ready.id): (
-                        self._candidate_document(ready)
-                    ),
-                    self._candidate_review_path(ready.assignment_id, review.id): dump_yaml(
-                        review.model_dump(mode="json")
-                    ),
-                }
+            documents[self._candidate_path(ready.assignment_id, ready.id)] = (
+                self._candidate_document(ready)
             )
+            self._store.write_batch(documents)
             return ready
 
     def get_candidate_review(self, review_id: str) -> AutomaticReviewRecord:
@@ -490,7 +531,7 @@ class WorkspaceRepository:
         course_id: str,
         output: MainAgentResult,
         member_id: str,
-    ) -> None:
+    ) -> CandidateDraft | None:
         with self._lock:
             selected = self._active_assignment_id()
             documents: dict[str, str | bytes] = {}
@@ -507,6 +548,7 @@ class WorkspaceRepository:
                     output.notes_output.model_dump(mode="json")
                 )
             candidate_content = None
+            created_candidate = None
             change_summary = ""
             unresolved_issues: list[str] = []
             if output.revision_output is not None:
@@ -537,6 +579,7 @@ class WorkspaceRepository:
                 documents[self._candidate_path(selected, candidate.id)] = self._candidate_document(
                     candidate
                 )
+                created_candidate = candidate
                 if output.review_output is not None and base is not None:
                     formal_review = ReviewRecord(
                         id=str(uuid4()), answer_id=base.id, result=output.review_output
@@ -554,6 +597,7 @@ class WorkspaceRepository:
                     formal_review.model_dump(mode="json")
                 )
             self._store.write_batch(documents)
+            return created_candidate
 
     def _write_assignment(self, assignment: Assignment) -> None:
         self._store.write_text(
@@ -630,6 +674,18 @@ class WorkspaceRepository:
     def _candidate_document(candidate: CandidateDraft) -> str:
         metadata = candidate.model_dump(mode="json", exclude={"content"})
         return render_front_matter(metadata, candidate.content)
+
+    @staticmethod
+    def candidate_document(candidate: CandidateDraft) -> str:
+        return WorkspaceRepository._candidate_document(candidate)
+
+    @staticmethod
+    def candidate_storage_path(assignment_id: str, candidate_id: str) -> str:
+        return WorkspaceRepository._candidate_path(assignment_id, candidate_id)
+
+    @staticmethod
+    def candidate_review_storage_path(assignment_id: str, review_id: str) -> str:
+        return WorkspaceRepository._candidate_review_path(assignment_id, review_id)
 
     @staticmethod
     def _assignment_path(assignment_id: str) -> str:

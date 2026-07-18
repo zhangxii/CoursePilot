@@ -28,6 +28,8 @@ class CandidateDraftService:
         resolved_issues: list[str] | None = None,
         unresolved_issues: list[str] | None = None,
         revision_mode: RevisionMode | None = None,
+        base_answer_version_id: str | None = None,
+        derived_from_candidate_id: str | None = None,
     ) -> CandidateDraft:
         assignment = self._workspace.get_assignment()
         return self._repository.create_candidate(
@@ -38,6 +40,8 @@ class CandidateDraftService:
             resolved_issues=resolved_issues,
             unresolved_issues=unresolved_issues,
             revision_mode=revision_mode,
+            base_answer_version_id=base_answer_version_id,
+            derived_from_candidate_id=derived_from_candidate_id,
         )
 
     def get(self, candidate_id: str) -> CandidateDraft:
@@ -45,6 +49,21 @@ class CandidateDraftService:
 
     def complete_automatic_review(self, candidate_id: str, result: ReviewResult) -> CandidateDraft:
         return self._repository.complete_candidate_review(candidate_id, result)
+
+    def complete_review_cycle(
+        self,
+        candidate_id: str,
+        first_review: ReviewResult,
+        *,
+        corrected_content: str | None = None,
+        final_review: ReviewResult | None = None,
+    ) -> CandidateDraft:
+        return self._repository.complete_candidate_review_cycle(
+            candidate_id,
+            first_review,
+            corrected_content=corrected_content,
+            final_review=final_review,
+        )
 
     def discard(self, candidate_id: str) -> CandidateDraft:
         candidate = self.get(candidate_id)

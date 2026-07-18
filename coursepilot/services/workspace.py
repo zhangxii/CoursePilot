@@ -4,6 +4,7 @@ from coursepilot.models import (
     AnswerComparison,
     AnswerRecord,
     Assignment,
+    CandidateDraft,
     Conversation,
     Course,
     CourseContext,
@@ -112,6 +113,16 @@ class WorkspaceService:
         member_id: str,
         conversation: Conversation | None = None,
     ) -> CourseContext:
+        context, _ = self.apply_agent_output_with_candidate(course, output, member_id, conversation)
+        return context
+
+    def apply_agent_output_with_candidate(
+        self,
+        course: Course,
+        output: MainAgentResult,
+        member_id: str,
+        conversation: Conversation | None = None,
+    ) -> tuple[CourseContext, CandidateDraft | None]:
         active_assignment_id = self.get_assignment().id
         if output.context.active_assignment_id != active_assignment_id:
             raise ValueError("agent output assignment does not match the active assignment")
@@ -120,5 +131,5 @@ class WorkspaceService:
                 raise ValueError("agent output conversation does not match the active conversation")
             if output.context.base_answer_version_id != conversation.base_answer_version_id:
                 raise ValueError("agent output base version does not match the conversation")
-        self._repository.apply_agent_output(course.id, output, member_id)
-        return self.context(course, conversation)
+        candidate = self._repository.apply_agent_output(course.id, output, member_id)
+        return self.context(course, conversation), candidate
